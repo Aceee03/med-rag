@@ -1,2 +1,0 @@
-FROM llama3.1
-PARAMETER num_ctx 6144
