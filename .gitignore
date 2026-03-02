@@ -1,0 +1,32 @@
+# Environment & secrets
+.env
+.env.*
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+*.egg
+
+# Checkpoints (large binary files)
+checkpoints/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# OS files
+Thumbs.db
+.DS_Store
+
+# IDE
+.vscode/
+.idea/
+
+# Generated HTML visualizations (optional — large files)
+# mental_health_knowledge_graph.html
+
+# Lib folder (if it contains installed packages)
+lib/

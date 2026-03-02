@@ -1,0 +1,43 @@
+name: Publish Package
+
+on:
+    release:
+        types: [published]
+
+    workflow_dispatch: # TODO remove
+
+jobs:
+    build-n-publish:
+        name: Build and publish to PyPI
+        runs-on: ubuntu-22.04
+        environment:
+          name: pypi
+          url: https://pypi.org/p/fast-graphrag
+        permissions:
+          id-token: write
+        steps:
+            - uses: actions/checkout@master
+
+            - name: Set up Python 3.11
+              uses: actions/setup-python@v1
+              with:
+                  python-version: 3.11
+
+            - name: Install Poetry
+              run: pipx install poetry==1.8.*
+
+            - name: Cache Poetry virtual environment
+              uses: actions/cache@v3
+              with:
+                  path: ~/.cache/pypoetry
+                  key: ${{ runner.os }}-poetry-${{ hashFiles('**/poetry.lock') }}
+                  restore-keys: |
+                      ${{ runner.os }}-poetry-
+
+            - name: Lock
+              run: poetry lock
+            - name: Build
+              run: poetry build
+
+            - name: pypi-publish
+              uses: pypa/gh-action-pypi-publish@v1.10.3
