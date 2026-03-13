@@ -1,0 +1,26 @@
+# Core LlamaIndex
+llama-index-core
+
+# LLM integrations
+llama-index-llms-openai
+llama-index-llms-gemini
+
+# Google Generative AI SDK (required by llama-index-llms-gemini)
+google-generativeai
+
+# Environment variables
+python-dotenv
+
+
+# Community detection (Leiden, etc.)
+graspologic>=3.4.1
+
+# Graph processing (graspologic not compatible with networkx>=3.2)
+networkx>=3.0,<3.2
+
+# Numerical (graspologic not compatible with numpy>=2)
+numpy<2
+
+# Visualization
+matplotlib
+pyvis
