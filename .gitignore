@@ -30,3 +30,5 @@ Thumbs.db
 
 # Lib folder (if it contains installed packages)
 lib/
+.claude
+.understand-anything
