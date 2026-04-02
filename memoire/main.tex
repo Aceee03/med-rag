@@ -1,0 +1,79 @@
+% !TEX encoding = UTF-8
+% PFE Engineer/Master LaTeX Template
+% See rules in rules.md
+
+\documentclass[12pt,a4paper]{report}
+
+% Packages
+% For XeLaTeX/LuaLaTeX and Arabic support
+\usepackage{fontspec} % For font selection
+\usepackage{polyglossia}
+\setmainlanguage{english}
+\setotherlanguage{arabic}
+% Use Times New Roman for both Latin and Arabic as per rules.md
+\setmainfont{Times New Roman}
+\newfontfamily\arabicfont[Script=Arabic]{Times New Roman}
+\usepackage{geometry}
+\usepackage{graphicx}
+\usepackage{setspace}
+\usepackage{titlesec}
+\usepackage{lmodern}
+\usepackage{enumitem}
+\usepackage{hyperref}
+
+% Margins
+\geometry{a4paper, left=2.5cm, right=2.5cm, top=2.5cm, bottom=2.5cm}
+
+% Paragraph formatting
+\setlength{\parskip}{6pt}
+\setlength{\parindent}{0pt}
+\onehalfspacing
+
+% Section numbering
+\titleformat{\section}{\normalfont\Large\bfseries}{\thesection}{1em}{}
+\titleformat{\subsection}{\normalfont\large\bfseries}{\thesubsection}{1em}{}
+\titleformat{\subsubsection}{\normalfont\normalsize\bfseries}{\thesubsubsection}{1em}{}
+
+% Times New Roman font
+\renewcommand{\familydefault}{\rmdefault}
+
+
+
+\begin{document}
+
+% Include cover page from separate file
+\input{cover}
+
+% Roman numbering for pre-intro pages
+\pagenumbering{roman}
+
+% Dedication, Acknowledgements, Abstract, etc.
+% \input{dedication}
+% \input{acknowledgements}
+% \input{abstract}
+
+% Table of contents, figures, tables, abbreviations
+\tableofcontents
+% \listoffigures
+% \listoftables
+% \input{abbreviations}
+
+% Arabic numbering for main content
+\cleardoublepage
+\pagenumbering{arabic}
+
+% Chapters
+% \input{chapter1}
+% \input{chapter2}
+% ...
+
+% Conclusion
+% \input{conclusion}
+
+% References
+% \input{references}
+
+% Annexes
+% \input{annexes}
+
+\end{document}
