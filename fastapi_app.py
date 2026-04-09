@@ -52,7 +52,7 @@ class QueryResponse(BaseModel):
 
 class GraphRAGService:
     def __init__(self) -> None:
-        self.graph_checkpoint_dir = os.getenv("GRAPH_CHECKPOINT_DIR", "./checkpoints/dsm_graph_v6_repaired")
+        self.graph_checkpoint_dir = os.getenv("GRAPH_CHECKPOINT_DIR", "./checkpoints/clinical_graph_clean")
         self.community_checkpoint_dir = os.getenv("COMMUNITY_CHECKPOINT_DIR", self.graph_checkpoint_dir)
 
         self.artifacts, self.graph_meta = load_graph_checkpoint(self.graph_checkpoint_dir)

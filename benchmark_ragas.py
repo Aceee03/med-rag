@@ -286,9 +286,9 @@ def write_summary(output_dir: Path, summaries: list[dict[str, Any]]) -> None:
 
 def build_argument_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Benchmark Vector RAG vs GraphRAG using RAGAS.")
-    parser.add_argument("--node-checkpoint-dir", default="./checkpoints/pipeline")
-    parser.add_argument("--graph-checkpoint-dir", default="./checkpoints/dsm_graph_v6_repaired")
-    parser.add_argument("--community-checkpoint-dir", default="./checkpoints/dsm_graph_v6_repaired")
+    parser.add_argument("--node-checkpoint-dir", default="./checkpoints/clinical_pipeline")
+    parser.add_argument("--graph-checkpoint-dir", default="./checkpoints/clinical_graph_clean")
+    parser.add_argument("--community-checkpoint-dir", default="./checkpoints/clinical_graph_clean")
     parser.add_argument("--eval-cases", default="./data/eval/thesis_eval_cases.jsonl")
     parser.add_argument("--output-dir", default="./checkpoints/benchmark")
     parser.add_argument("--vector-model", default="sentence-transformers/all-MiniLM-L6-v2")
