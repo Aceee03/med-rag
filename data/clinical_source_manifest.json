@@ -1,0 +1,23 @@
+{
+  "generated_at": "2026-04-09T16:35:40.068689+00:00",
+  "generator": "ingest_clinical_sources.py",
+  "registry": "C:\\Users\\derrm\\Desktop\\Thesis resources\\data\\source_registry.json",
+  "output_dir": "C:\\Users\\derrm\\Desktop\\Thesis resources\\data\\clinical_markdown",
+  "documents": [
+    {
+      "id": "nimh-depression-pdf",
+      "authority": "NIMH",
+      "condition": "Depression",
+      "source_title": "Depression",
+      "format": "pdf",
+      "url": "https://www.nimh.nih.gov/sites/default/files/health/publications/depression/depression.pdf",
+      "status": "ingested",
+      "output_markdown": "C:\\Users\\derrm\\Desktop\\Thesis resources\\data\\clinical_markdown\\nimh__depression__nimh-depression-pdf.md",
+      "downloaded_file": "C:\\Users\\derrm\\Desktop\\Thesis resources\\data\\source_cache\\pdf\\nimh__depression__nimh-depression-pdf.pdf",
+      "resolved_url": "https://www.nimh.nih.gov/sites/default/files/health/publications/depression/depression.pdf",
+      "content_type": "application/pdf",
+      "markdown_char_count": 18640,
+      "parser_used": "pymupdf4llm:layout"
+    }
+  ]
+}

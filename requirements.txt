@@ -11,6 +11,11 @@ google-generativeai
 # Environment variables
 python-dotenv
 
+# Local PDF -> Markdown conversion
+pymupdf4llm
+trafilatura
+requests
+
 
 # Community detection (Leiden, etc.)
 graspologic>=3.4.1
@@ -24,3 +29,13 @@ numpy<2
 # Visualization
 matplotlib
 pyvis
+
+# Production API
+fastapi
+uvicorn
+
+# Retrieval + reranking
+sentence-transformers
+
+# Thesis evaluation
+ragas

@@ -1,0 +1,84 @@
+{
+  "sources": [
+    {
+      "id": "nimh-depression-pdf",
+      "authority": "NIMH",
+      "condition": "Depression",
+      "source_title": "Depression",
+      "format": "pdf",
+      "url": "https://www.nimh.nih.gov/sites/default/files/health/publications/depression/depression.pdf"
+    },
+    {
+      "id": "nimh-anxiety-html",
+      "authority": "NIMH",
+      "condition": "Anxiety",
+      "source_title": "Generalized Anxiety Disorder",
+      "format": "html",
+      "url": "https://www.nimh.nih.gov/health/publications/generalized-anxiety-disorder-gad"
+    },
+    {
+      "id": "nimh-autism-pdf",
+      "authority": "NIMH",
+      "condition": "Autism",
+      "source_title": "Autism Spectrum Disorder",
+      "format": "pdf",
+      "url": "https://www.nimh.nih.gov/sites/default/files/documents/health/publications/autism-spectrum-disorder/autism-spectrum-disorder.pdf"
+    },
+    {
+      "id": "nimh-bipolar-pdf",
+      "authority": "NIMH",
+      "condition": "Bipolar",
+      "source_title": "Bipolar Disorder",
+      "format": "pdf",
+      "url": "https://www.nimh.nih.gov/sites/default/files/health/publications/bipolar-disorder/bipolar-disorder.pdf"
+    },
+    {
+      "id": "nimh-ptsd-pdf",
+      "authority": "NIMH",
+      "condition": "PTSD",
+      "source_title": "Post-Traumatic Stress Disorder",
+      "format": "pdf",
+      "url": "https://www.nimh.nih.gov/sites/default/files/documents/health/publications/post-traumatic-stress-disorder-ptsd/post-traumatic-stress-disorder_1.pdf"
+    },
+    {
+      "id": "who-depression-html",
+      "authority": "WHO",
+      "condition": "Depression",
+      "source_title": "Depression",
+      "format": "html",
+      "url": "https://www.who.int/news-room/fact-sheets/detail/depression"
+    },
+    {
+      "id": "who-anxiety-html",
+      "authority": "WHO",
+      "condition": "Anxiety",
+      "source_title": "Anxiety disorders",
+      "format": "html",
+      "url": "https://www.who.int/news-room/fact-sheets/detail/anxiety-disorders"
+    },
+    {
+      "id": "who-autism-html",
+      "authority": "WHO",
+      "condition": "Autism",
+      "source_title": "Autism spectrum disorders",
+      "format": "html",
+      "url": "https://www.who.int/news-room/fact-sheets/detail/autism-spectrum-disorders"
+    },
+    {
+      "id": "who-bipolar-html",
+      "authority": "WHO",
+      "condition": "Bipolar",
+      "source_title": "Bipolar disorder",
+      "format": "html",
+      "url": "https://www.who.int/news-room/fact-sheets/detail/bipolar-disorder"
+    },
+    {
+      "id": "who-ptsd-html",
+      "authority": "WHO",
+      "condition": "PTSD",
+      "source_title": "Post-traumatic stress disorder",
+      "format": "html",
+      "url": "https://www.who.int/news-room/fact-sheets/detail/post-traumatic-stress-disorder"
+    }
+  ]
+}
