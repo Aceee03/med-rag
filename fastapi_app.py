@@ -19,20 +19,42 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 from graphrag_pipeline import (
+    graph_checkpoint_exists,
     hybrid_query,
     load_graph_checkpoint,
     load_or_build_communities,
     load_or_build_community_summaries,
 )
-from pipeline import _maybe_build_openai_llm
+from llm_utils import _maybe_build_openai_llm
 from safety_shield import US_CRISIS_RESOURCES
 
 
 load_dotenv(Path(".env"), override=False)
 
 
+DEFAULT_GRAPH_CHECKPOINT_CANDIDATES = (
+    "./checkpoints/clinical_dsm_merged",
+    "./checkpoints/clinical_graph_clean",
+)
+
+
+def _default_graph_checkpoint_dir() -> str:
+    configured = os.getenv("GRAPH_CHECKPOINT_DIR")
+    if configured:
+        return configured
+
+    for candidate in DEFAULT_GRAPH_CHECKPOINT_CANDIDATES:
+        if graph_checkpoint_exists(candidate):
+            return candidate
+    return DEFAULT_GRAPH_CHECKPOINT_CANDIDATES[0]
+
+
 class QueryRequest(BaseModel):
     question: str = Field(..., min_length=1, description="User question to answer with GraphRAG.")
+    session_id: str | None = Field(
+        default=None,
+        description="Optional session identifier to let follow-up symptom queries refine earlier ones.",
+    )
     answer_with_llm: bool = Field(
         default=False,
         description="If true, use the configured answer LLM for synthesis.",
@@ -40,6 +62,7 @@ class QueryRequest(BaseModel):
 
 
 class QueryResponse(BaseModel):
+    source_chunks: list[dict[str, str]]
     answer: str
     query_type: str
     citations: list[str]
@@ -52,8 +75,9 @@ class QueryResponse(BaseModel):
 
 class GraphRAGService:
     def __init__(self) -> None:
-        self.graph_checkpoint_dir = os.getenv("GRAPH_CHECKPOINT_DIR", "./checkpoints/clinical_graph_clean")
+        self.graph_checkpoint_dir = _default_graph_checkpoint_dir()
         self.community_checkpoint_dir = os.getenv("COMMUNITY_CHECKPOINT_DIR", self.graph_checkpoint_dir)
+        self.session_questions: dict[str, list[str]] = {}
 
         self.artifacts, self.graph_meta = load_graph_checkpoint(self.graph_checkpoint_dir)
         self.communities = load_or_build_communities(
@@ -70,14 +94,30 @@ class GraphRAGService:
         )
         self.answer_llm = _maybe_build_openai_llm("PIPELINE_ANSWER", "gpt-4o-mini", 400)
 
-    def query(self, question: str, *, answer_with_llm: bool = False) -> dict[str, Any]:
-        return hybrid_query(
+    def query(
+        self,
+        question: str,
+        *,
+        answer_with_llm: bool = False,
+        session_id: str | None = None,
+    ) -> dict[str, Any]:
+        history: list[str] = []
+        normalized_session_id = (session_id or "").strip()
+        if normalized_session_id:
+            history = list(self.session_questions.get(normalized_session_id, []))
+
+        result = hybrid_query(
             question,
             self.artifacts,
             community_summaries=self.summaries,
             llm_client=self.answer_llm,
             answer_with_llm=answer_with_llm and self.answer_llm is not None,
+            conversation_context=history,
         )
+        if normalized_session_id:
+            updated_history = [*history, question][-6:]
+            self.session_questions[normalized_session_id] = updated_history
+        return result
 
 
 @lru_cache(maxsize=1)
@@ -148,6 +188,7 @@ def query(request: QueryRequest) -> QueryResponse:
         result = get_service().query(
             request.question,
             answer_with_llm=request.answer_with_llm,
+            session_id=request.session_id,
         )
     except FileNotFoundError as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
@@ -155,6 +196,19 @@ def query(request: QueryRequest) -> QueryResponse:
         raise HTTPException(status_code=500, detail=f"GraphRAG query failed: {exc}") from exc
 
     return QueryResponse(
+        source_chunks=[
+            {
+                "chunk_id": str(item.get("chunk_id", "")),
+                "citation": str(item.get("citation", "")),
+                "text": str(item.get("text", "")),
+                "section_title": str(item.get("section_title", "")),
+                "context_tag": str(item.get("context_tag", "")),
+                "source_label": str(item.get("source_label", "")),
+                "file_path": str(item.get("file_path", "")),
+                "header_path": str(item.get("header_path", "")),
+            }
+            for item in result.get("source_chunks", [])
+        ],
         answer=result["answer"],
         query_type=result["query_type"],
         citations=result["citations"],

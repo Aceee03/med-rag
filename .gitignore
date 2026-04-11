@@ -4,6 +4,7 @@
 
 # Python
 __pycache__/
+.ruff_cache/
 *.pyc
 *.pyo
 *.egg-info/
@@ -26,7 +27,14 @@ Thumbs.db
 .idea/
 
 # Generated HTML visualizations (optional — large files)
-# mental_health_knowledge_graph.html
+mental_health_knowledge_graph.html
+
+# LaTeX build artifacts
+memoire/*.aux
+memoire/*.log
+memoire/*.out
+memoire/*.synctex.gz
+memoire/*.toc
 
 # Lib folder (if it contains installed packages)
 lib/

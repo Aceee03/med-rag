@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import math
+import os
 import re
+import warnings
 from dataclasses import dataclass
 from typing import Any
 
@@ -9,6 +11,7 @@ import numpy as np
 from llama_index.core.llms import ChatMessage
 
 from graphrag_pipeline import _extract_response_text
+from pipeline_helpers import citation_from_metadata
 
 
 TOKEN_STOPWORDS = {
@@ -57,6 +60,11 @@ def _excerpt(text: str, limit: int = 420) -> str:
     return compact[: limit - 3].rstrip() + "..."
 
 
+def _prepare_sentence_transformers_environment() -> None:
+    os.environ.setdefault("USE_TF", "0")
+    os.environ.setdefault("TRANSFORMERS_NO_TF", "1")
+
+
 @dataclass
 class ChunkRecord:
     node_id: str
@@ -85,7 +93,10 @@ def build_chunk_records(enriched_nodes: list[Any]) -> list[ChunkRecord]:
     records: list[ChunkRecord] = []
     for node in enriched_nodes:
         metadata = getattr(node, "metadata", {}) or {}
-        citation = metadata.get("citation") or "Unknown source"
+        citation = citation_from_metadata(
+            metadata,
+            fallback=str(metadata.get("citation") or "Unknown source"),
+        )
         records.append(
             ChunkRecord(
                 node_id=str(getattr(node, "node_id", "")),
@@ -109,12 +120,14 @@ class VectorRetriever:
         self.records = records
         self.model_name = model_name
         self.backend = "lexical"
+        self.backend_error = ""
         self._embedder = None
         self._embeddings = None
         self._doc_tokens = [_tokenize(record.combined_text) for record in records]
         self._idf = self._build_idf(self._doc_tokens)
 
         try:
+            _prepare_sentence_transformers_environment()
             from sentence_transformers import SentenceTransformer
 
             self._embedder = SentenceTransformer(model_name)
@@ -126,9 +139,15 @@ class VectorRetriever:
                 )
             )
             self.backend = "sentence-transformers"
-        except Exception:
+        except Exception as exc:
             self._embedder = None
             self._embeddings = None
+            self.backend_error = str(exc)
+            warnings.warn(
+                f"VectorRetriever falling back to lexical search because '{model_name}' could not be loaded: {exc}",
+                RuntimeWarning,
+                stacklevel=2,
+            )
 
     @staticmethod
     def _build_idf(doc_tokens: list[list[str]]) -> dict[str, float]:
@@ -202,14 +221,22 @@ class CrossEncoderReranker:
     ) -> None:
         self.model_name = model_name
         self.backend = "lexical"
+        self.backend_error = ""
         self._model = None
         try:
+            _prepare_sentence_transformers_environment()
             from sentence_transformers import CrossEncoder
 
             self._model = CrossEncoder(model_name)
             self.backend = "cross-encoder"
-        except Exception:
+        except Exception as exc:
             self._model = None
+            self.backend_error = str(exc)
+            warnings.warn(
+                f"CrossEncoderReranker falling back to lexical reranking because '{model_name}' could not be loaded: {exc}",
+                RuntimeWarning,
+                stacklevel=2,
+            )
 
     def rerank(
         self,

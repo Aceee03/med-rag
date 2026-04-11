@@ -17,6 +17,7 @@ from progress_utils import ProgressPrinter
 
 CHECKPOINT_VERSION = 1
 ENRICHMENT_PROMPT_VERSION = "v3"
+GENERAL_SECTION_LABEL = "General Section"
 
 
 def _ensure_dir(path: str | Path) -> Path:
@@ -219,7 +220,115 @@ def _clean_doc_name(raw_value: Any) -> str:
     name = Path(str(raw_value)).name
     name = re.sub(r"\.filtered(?=\.md$)", "", name, flags=re.IGNORECASE)
     name = re.sub(r"\.(md|markdown|txt)$", "", name, flags=re.IGNORECASE)
-    return name.replace("_", " ").strip() or "Unknown Document"
+    name = re.sub(r"_+", " ", name)
+    name = re.sub(r"\s+", " ", name)
+    return name.strip() or "Unknown Document"
+
+
+def _pretty_source_fragment(raw_value: str) -> str:
+    abbreviations = {
+        "adhd": "ADHD",
+        "asd": "ASD",
+        "dsm": "DSM",
+        "nimh": "NIMH",
+        "ocd": "OCD",
+        "ptsd": "PTSD",
+        "who": "WHO",
+    }
+    words = re.split(r"[-_ ]+", raw_value.strip())
+    rendered = []
+    for word in words:
+        if not word:
+            continue
+        lowered = word.lower()
+        rendered.append(abbreviations.get(lowered, word.capitalize()))
+    return " ".join(rendered).strip()
+
+
+def _structured_source_label(raw_value: Any) -> str:
+    stem = Path(str(raw_value or "")).stem
+    parts = [part for part in stem.split("__") if part]
+    if len(parts) < 2:
+        return ""
+    authority = _pretty_source_fragment(parts[0])
+    condition = _pretty_source_fragment(parts[1])
+    if authority and condition:
+        return f"{authority}: {condition}"
+    return ""
+
+
+def _legacy_slug_source_label(raw_value: str) -> str:
+    tokens = raw_value.strip().split()
+    if len(tokens) < 2:
+        return ""
+    authority = tokens[0].lower()
+    if authority not in {"dsm", "nimh", "who"}:
+        return ""
+    condition = _pretty_source_fragment(tokens[1])
+    return f"{authority.upper()}: {condition}" if condition else authority.upper()
+
+
+def normalize_section_label(raw_value: Any, *, fallback: str = GENERAL_SECTION_LABEL) -> str:
+    raw_text = str(raw_value or "").strip()
+    if not raw_text:
+        return fallback
+    lowered = raw_text.lower()
+    if "intentionally omitted" in lowered or "==> picture" in lowered:
+        return fallback
+
+    flattened = raw_text.replace("\r", " ").replace("\n", " / ")
+    flattened = re.sub(r"[*`_]+", "", flattened)
+    flattened = re.sub(r"\s+", " ", flattened).strip()
+
+    path_parts = [
+        part.strip(" -:/")
+        for part in re.split(r"[\\/]+", flattened)
+        if part.strip(" -:/")
+    ]
+    if path_parts:
+        flattened = " > ".join(path_parts)
+
+    flattened = re.sub(r"\s+", " ", flattened).strip(" -:/")
+    return flattened or fallback
+
+
+def build_source_label(metadata: dict[str, Any] | None) -> str:
+    metadata = metadata or {}
+    source_hint = metadata.get("source_title") or metadata.get("source_label")
+    source_doc = _clean_doc_name(source_hint) if source_hint else ""
+    structured_label = _structured_source_label(metadata.get("file_name") or metadata.get("file_path"))
+    if structured_label and (
+        not source_doc
+        or source_doc == "Unknown Document"
+        or ":" not in source_doc
+    ):
+        source_doc = structured_label
+    if source_doc and ":" not in source_doc:
+        legacy_label = _legacy_slug_source_label(source_doc)
+        if legacy_label:
+            source_doc = legacy_label
+    if not source_doc:
+        source_doc = _clean_doc_name(metadata.get("file_name") or metadata.get("file_path"))
+    source_authority = str(metadata.get("authority") or "").strip()
+    if source_authority and not source_doc.startswith(f"{source_authority}:"):
+        return f"{source_authority}: {source_doc}"
+    return source_doc
+
+
+def build_citation_label(source_label: str, section_label: str) -> str:
+    normalized_section = normalize_section_label(section_label)
+    if normalized_section == GENERAL_SECTION_LABEL:
+        return source_label
+    return f"{source_label} — {normalized_section}"
+
+
+def citation_from_metadata(metadata: dict[str, Any] | None, *, fallback: str = "Unknown source") -> str:
+    metadata = metadata or {}
+    source_label = build_source_label(metadata)
+    if not source_label:
+        return fallback
+    section_label = metadata.get("section_title") or metadata.get("header_path") or GENERAL_SECTION_LABEL
+    return build_citation_label(source_label, str(section_label))
 
 
 def _extract_section_title(node_text: str) -> str:
@@ -231,10 +340,10 @@ def _extract_section_title(node_text: str) -> str:
             title = re.sub(r"^#+\s*", "", stripped)
         else:
             title = stripped
-        title = re.sub(r"[*`_]+", "", title).strip(" -:/")
+        title = normalize_section_label(title, fallback=GENERAL_SECTION_LABEL)
         if title:
             return title[:120]
-    return "General Section"
+    return GENERAL_SECTION_LABEL
 
 
 def _strip_existing_context(node_text: str) -> str:
@@ -254,7 +363,7 @@ def _strip_existing_context(node_text: str) -> str:
 
 
 def _fallback_context(source_doc: str, section_title: str) -> str:
-    if section_title and section_title != "General Section":
+    if section_title and section_title != GENERAL_SECTION_LABEL:
         return (
             f"This passage is from {source_doc} and focuses on "
             f"{section_title} in a mental health reference."
@@ -426,26 +535,14 @@ def enrich_nodes_with_context(
         base_text = enriched_node.metadata.get("original_text", enriched_node.text)
         base_text = _strip_existing_context(base_text)
 
-        source_doc = _clean_doc_name(
-            enriched_node.metadata.get("source_title")
-            or enriched_node.metadata.get("source_label")
-            or enriched_node.metadata.get("file_name")
-            or enriched_node.metadata.get("file_path")
-        )
-        source_authority = str(enriched_node.metadata.get("authority") or "").strip()
-        if source_authority:
-            source_doc = f"{source_authority}: {source_doc}"
+        source_doc = build_source_label(enriched_node.metadata)
         header_path = enriched_node.metadata.get("header_path")
         section_title = (
-            header_path
+            normalize_section_label(header_path)
             if header_path and header_path != "/"
             else _extract_section_title(base_text)
         )
-        citation = (
-            f"{source_doc} — {section_title}"
-            if section_title and section_title != "General Section"
-            else source_doc
-        )
+        citation = build_citation_label(source_doc, section_title)
 
         excerpt = re.sub(r"\s+", " ", base_text).strip()[:preview_chars]
         cache_key = (source_doc, section_title, excerpt)

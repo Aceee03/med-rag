@@ -1,67 +1,18 @@
 from __future__ import annotations
 
 import argparse
-import os
 import sys
+import warnings
 from pathlib import Path
 from typing import Any
 
 from dotenv import load_dotenv
+from llm_utils import _maybe_build_openai_llm
 
-from graphrag_pipeline import (
-    clean_graph_checkpoint,
-    repair_graph_checkpoint,
-    extract_graph_from_nodes,
-    graph_checkpoint_exists,
-    hybrid_query,
-    load_graph_checkpoint,
-    load_or_build_communities,
-    load_or_build_community_summaries,
-    structural_checks,
-    summarize_check_results,
+warnings.filterwarnings(
+    "ignore",
+    message="The 'validate_default' attribute with value True was provided to the `Field\\(\\)` function.*",
 )
-from pipeline_helpers import (
-    enrich_nodes_with_context,
-    load_enriched_nodes_checkpoint,
-    load_or_build_markdown_nodes,
-)
-
-
-def _int_env(name: str, default: int) -> int:
-    raw = os.getenv(name)
-    if not raw:
-        return default
-    try:
-        return int(raw)
-    except ValueError:
-        return default
-
-
-def _maybe_build_openai_llm(prefix: str, default_model: str, default_max_tokens: int) -> Any:
-    api_key = os.getenv("OPENAI_API_KEY")
-    if not api_key:
-        return None
-
-    model = os.getenv(f"{prefix}_MODEL", default_model)
-    max_tokens = _int_env(f"{prefix}_MAX_TOKENS", default_max_tokens)
-    reasoning_effort = os.getenv(f"{prefix}_REASONING_EFFORT")
-
-    from llama_index.llms.openai import OpenAI
-
-    kwargs = {
-        "model": model,
-        "api_key": api_key,
-        "temperature": 0,
-        "max_tokens": max_tokens,
-    }
-    if reasoning_effort:
-        kwargs["reasoning_effort"] = reasoning_effort
-
-    try:
-        return OpenAI(**kwargs)
-    except TypeError:
-        kwargs.pop("reasoning_effort", None)
-        return OpenAI(**kwargs)
 
 
 def _print_pipeline_stats(graph_meta: dict[str, Any], artifacts, communities, summaries) -> None:
@@ -88,6 +39,8 @@ def _print_stage(title: str, detail: str | None = None) -> None:
 
 
 def _run_smoke_tests(artifacts, summaries, answer_llm=None, answer_with_llm: bool = False) -> int:
+    from graphrag_pipeline import hybrid_query, structural_checks, summarize_check_results
+
     print("=" * 72)
     print("STRUCTURAL TESTS")
     print("=" * 72)
@@ -168,6 +121,12 @@ def build_argument_parser() -> argparse.ArgumentParser:
     parser.add_argument("--repair-graph-checkpoint-dir", default=None)
     parser.add_argument("--force-rebuild-repair-graph", action="store_true")
     parser.add_argument("--repair-dsm-gaps", action="store_true")
+    parser.add_argument("--repair-clinical-gaps", action="store_true")
+    parser.add_argument("--clinical-repair-graph-checkpoint-dir", default=None)
+    parser.add_argument("--force-rebuild-clinical-repair-graph", action="store_true")
+    parser.add_argument("--clinical-repair-node-dir", default=None)
+    parser.add_argument("--clinical-repair-supplemental-node-dir", default="./checkpoints/pipeline")
+    parser.add_argument("--clinical-repair-top-k", type=int, default=8)
     parser.add_argument("--force-rebuild-communities", action="store_true")
     parser.add_argument("--no-resume-graph", action="store_true")
     parser.add_argument("--max-graph-nodes", type=int, default=None)
@@ -180,9 +139,22 @@ def build_argument_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def main() -> int:
-    parser = build_argument_parser()
-    args = parser.parse_args()
+def run_pipeline(args: argparse.Namespace) -> int:
+    from graphrag_pipeline import (
+        clean_graph_checkpoint,
+        extract_graph_from_nodes,
+        graph_checkpoint_exists,
+        hybrid_query,
+        load_graph_checkpoint,
+        load_or_build_communities,
+        load_or_build_community_summaries,
+        repair_graph_checkpoint,
+    )
+    from pipeline_helpers import (
+        enrich_nodes_with_context,
+        load_enriched_nodes_checkpoint,
+        load_or_build_markdown_nodes,
+    )
 
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(line_buffering=True)
@@ -301,6 +273,49 @@ def main() -> int:
             if repair_report:
                 print(f"Repair report: {repair_report}")
 
+    if args.repair_clinical_gaps:
+        source_graph_dir = active_graph_dir
+        clinical_repair_dir = args.clinical_repair_graph_checkpoint_dir or source_graph_dir
+        repair_exists = graph_checkpoint_exists(clinical_repair_dir)
+        already_clinically_repaired = bool(graph_meta.get("curation_report"))
+        active_graph_dir = clinical_repair_dir
+        _print_stage(
+            "STAGE 3D: CLINICAL REPAIR",
+            f"source: {source_graph_dir}\ntarget: {active_graph_dir}",
+        )
+        if (
+            args.force_rebuild_clinical_repair_graph
+            or not repair_exists
+            or (Path(source_graph_dir) == Path(clinical_repair_dir) and not already_clinically_repaired)
+        ):
+            from repair_clinical_graph import repair_clinical_graph_checkpoint
+
+            repair_llm = _maybe_build_openai_llm("PIPELINE_REPAIR", "gpt-4o-mini", 900)
+            if repair_llm is None:
+                raise RuntimeError(
+                    "Clinical graph repair requires an LLM, but OPENAI_API_KEY is not configured."
+                )
+            clinical_node_dir = args.clinical_repair_node_dir or args.node_checkpoint_dir
+            artifacts, graph_meta, clinical_report = repair_clinical_graph_checkpoint(
+                source_graph_dir,
+                active_graph_dir,
+                clinical_node_dir=clinical_node_dir,
+                supplemental_node_dir=args.clinical_repair_supplemental_node_dir,
+                llm_client=repair_llm,
+                top_k=args.clinical_repair_top_k,
+                progress_every=max(1, min(args.progress_every, 5)),
+            )
+            print(
+                "Clinical repair nodes: "
+                f"{clinical_report['repair_node_count']} from {clinical_report['repair_node_sources']}"
+            )
+            print(f"Repair report: {clinical_report['repair_report']}")
+            print(f"Curation report: {clinical_report['curation_report']}")
+            print(f"Cleanup report: {clinical_report['cleanup_report']}")
+        else:
+            artifacts, graph_meta = load_graph_checkpoint(active_graph_dir)
+            print(f"Loaded clinically repaired graph checkpoint from {active_graph_dir}.")
+
     summary_llm = None
     if args.summary_with_llm:
         summary_llm = _maybe_build_openai_llm("PIPELINE_SUMMARY", "gpt-4o-mini", 220)
@@ -311,6 +326,12 @@ def main() -> int:
     if args.repair_dsm_gaps and community_checkpoint_dir in {
         args.graph_checkpoint_dir,
         args.clean_graph_checkpoint_dir,
+    }:
+        community_checkpoint_dir = active_graph_dir
+    if args.repair_clinical_gaps and community_checkpoint_dir in {
+        args.graph_checkpoint_dir,
+        args.clean_graph_checkpoint_dir,
+        args.repair_graph_checkpoint_dir,
     }:
         community_checkpoint_dir = active_graph_dir
 
@@ -365,6 +386,12 @@ def main() -> int:
         )
 
     return 0
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = build_argument_parser()
+    args = parser.parse_args(argv)
+    return run_pipeline(args)
 
 
 if __name__ == "__main__":

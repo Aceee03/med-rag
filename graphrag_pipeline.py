@@ -8,11 +8,20 @@ import os
 import pickle
 import re
 import sys
+import warnings
 from collections import Counter, defaultdict
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from difflib import SequenceMatcher
 from pathlib import Path
 from typing import Any
+
+os.environ.setdefault("TF_CPP_MIN_LOG_LEVEL", "2")
+os.environ.setdefault("TF_ENABLE_ONEDNN_OPTS", "0")
+warnings.filterwarnings(
+    "ignore",
+    message="The 'validate_default' attribute with value True was provided to the `Field\\(\\)` function.*",
+)
 
 import networkx as nx
 import numpy as np
@@ -20,6 +29,7 @@ from graspologic.partition import leiden
 from llama_index.core.graph_stores.types import EntityNode, Relation
 from llama_index.core.llms import ChatMessage
 
+from pipeline_helpers import citation_from_metadata
 from progress_utils import ProgressPrinter
 from safety_shield import assess_safety_risk
 
@@ -44,6 +54,9 @@ GRAPH_REQUIRED_FILES = (
     "relation_metadata.pkl",
     "relation_index.pkl",
     "chunk_citation_map.pkl",
+)
+GRAPH_OPTIONAL_FILES = (
+    "chunk_payload_map.pkl",
 )
 
 ALLOWED_TYPES = {
@@ -408,8 +421,89 @@ MENTAL_HEALTH_KEYWORDS = {
     "delusion",
 }
 
+HUMAN_SYMPTOM_PATTERNS = [
+    "i feel",
+    "i am feeling",
+    "i've been feeling",
+    "i have",
+    "i've had",
+    "i am having",
+    "i'm having",
+    "i'm experiencing",
+    "i have been experiencing",
+    "i'm suffering",
+    "i have been suffering",
+    "what could this be",
+    "what could this possibly be",
+    "what might this be",
+    "what could it be",
+    "could this be",
+    "does this sound like",
+]
+
+FOLLOW_UP_PATTERNS = [
+    "and i",
+    "also",
+    "plus",
+    "in addition",
+    "another symptom",
+    "more recently",
+    "lately",
+    "as well",
+]
+
+HUMAN_SYMPTOM_CUE_WORDS = {
+    "appetite",
+    "concentrate",
+    "concentrating",
+    "eat",
+    "eating",
+    "energy",
+    "exhausted",
+    "fatigue",
+    "hopeless",
+    "hungry",
+    "irritable",
+    "lost",
+    "numb",
+    "panic",
+    "sad",
+    "sadness",
+    "sleep",
+    "sleeping",
+    "tired",
+    "tiredness",
+    "worry",
+    "worried",
+}
+
+SYMPTOM_PHRASE_ALIASES = {
+    "TIRED": ["FATIGUE", "TIREDNESS", "EASILY FATIGUED"],
+    "TIRED ALL THE TIME": ["FATIGUE", "TIREDNESS", "EASILY FATIGUED"],
+    "LOW ENERGY": ["FATIGUE", "TIREDNESS"],
+    "EXHAUSTED": ["FATIGUE", "TIREDNESS", "EASILY FATIGUED"],
+    "LOST MY APPETITE": ["LOSS OF APPETITE", "POOR APPETITE"],
+    "LOST APPETITE": ["LOSS OF APPETITE", "POOR APPETITE"],
+    "NO APPETITE": ["LOSS OF APPETITE", "POOR APPETITE"],
+    "LOSS OF APPETITE": ["LOSS OF APPETITE", "POOR APPETITE"],
+    "POOR APPETITE": ["POOR APPETITE", "LOSS OF APPETITE"],
+    "CANT SLEEP": ["DISTURBED SLEEP", "SLEEP PROBLEM", "INSOMNIA"],
+    "CAN T SLEEP": ["DISTURBED SLEEP", "SLEEP PROBLEM", "INSOMNIA"],
+    "CAN'T SLEEP": ["DISTURBED SLEEP", "SLEEP PROBLEM", "INSOMNIA"],
+    "TROUBLE SLEEPING": ["DISTURBED SLEEP", "SLEEP PROBLEM", "INSOMNIA"],
+    "CANNOT SLEEP": ["DISTURBED SLEEP", "SLEEP PROBLEM", "INSOMNIA"],
+    "TROUBLE CONCENTRATING": ["TROUBLE CONCENTRATING", "DIFFICULTY CONCENTRATING"],
+    "CAN'T CONCENTRATE": ["TROUBLE CONCENTRATING", "DIFFICULTY CONCENTRATING"],
+    "CANT CONCENTRATE": ["TROUBLE CONCENTRATING", "DIFFICULTY CONCENTRATING"],
+    "LOST INTEREST": ["LOSS OF INTEREST"],
+    "NO INTEREST": ["LOSS OF INTEREST"],
+    "FEELING SAD": ["SADNESS", "DEPRESSED MOOD"],
+    "FEEL SAD": ["SADNESS", "DEPRESSED MOOD"],
+    "DOWN ALL THE TIME": ["DEPRESSED MOOD", "SADNESS"],
+}
+
 OUT_OF_SCOPE_RESPONSE = (
-    "I can help with mental health conditions, symptoms, and treatments. "
+    "I can help with mental health conditions, symptoms, treatments, and medications. "
     "Please ask a question in that area."
 )
 
@@ -520,6 +614,7 @@ class GraphArtifacts:
     entity_sources: dict[str, set[str]]
     relation_index: dict[str, dict[str, list[tuple[str, str]]]]
     chunk_citation_map: dict[str, str]
+    chunk_payload_map: dict[str, dict[str, Any]]
 
     @property
     def entity_count(self) -> int:
@@ -562,6 +657,31 @@ GENERIC_ENTITY_NAMES = {
     "LEARNING DISORDER",
     "NEUROLOGICAL DISORDER",
     "NEUROCOGNITIVE DISORDER",
+}
+
+LOW_SIGNAL_ENTITY_NAMES = {
+    "ABILITY TO FUNCTION",
+    "ADVERSE CIRCUMSTANCES",
+    "BRAIN STRUCTURE AND FUNCTION",
+    "COMMUNICATION SKILLS",
+    "DIAGNOSTIC EVALUATION",
+    "DISABILITY",
+    "GUIDANCE ON COMMUNITY MENTAL HEALTH SERVICES",
+    "LIFE SKILLS",
+    "MEDICINES",
+    "MHGAP HUMANITARIAN INTERVENTION GUIDE",
+    "MHGAP PROGRAMME",
+    "QUALITYRIGHTS INITIATIVE",
+    "SCREENING FOR AUTISM",
+    "SOCIAL SKILLS",
+    "STIGMA",
+    "STRENGTHS",
+    "VIRUSES",
+    "WHO SPECIAL INITIATIVE FOR MENTAL HEALTH",
+}
+
+LOW_SIGNAL_ENTITY_SUBSTRINGS = {
+    "MENTAL HEALTH GAP ACTION PROGRAMME",
 }
 
 RELATION_SECTION_HINTS = {
@@ -650,6 +770,27 @@ DSM_REPAIR_TARGETS = [
         "relations": ["DIFFERENTIAL_DIAGNOSIS", "HAS_DIAGNOSTIC_CRITERION", "HAS_COURSE"],
     },
 ]
+
+CLINICAL_REPAIR_TARGETS = [
+    {
+        "condition": "DEPRESSION",
+        "relations": ["HAS_PREVALENCE"],
+    },
+    {
+        "condition": "GENERALIZED ANXIETY DISORDER",
+        "relations": ["HAS_PREVALENCE", "DIFFERENTIAL_DIAGNOSIS"],
+    },
+    {
+        "condition": "POST TRAUMATIC STRESS DISORDER",
+        "relations": ["DIFFERENTIAL_DIAGNOSIS"],
+    },
+    {
+        "condition": "AUTISM SPECTRUM DISORDER",
+        "relations": ["TREATED_BY"],
+    },
+]
+
+DEFAULT_REPAIR_TARGETS = [*DSM_REPAIR_TARGETS, *CLINICAL_REPAIR_TARGETS]
 
 
 def _ensure_dir(path: str | Path) -> Path:
@@ -837,21 +978,28 @@ def build_chunk_citation_map(nodes: list[Any]) -> dict[str, str]:
     citation_map: dict[str, str] = {}
     for node in nodes:
         metadata = getattr(node, "metadata", {}) or {}
-        filename = metadata.get("file_name") or metadata.get("file_path") or "unknown.md"
-        source_title = metadata.get("source_title")
-        authority = metadata.get("authority")
-        header_path = metadata.get("header_path")
-        section_title = metadata.get("section_title")
-        header = (
-            header_path
-            if header_path and header_path != "/"
-            else section_title or "/"
-        )
-        base_label = str(source_title or Path(str(filename)).name)
-        if authority:
-            base_label = f"{authority}: {base_label}"
-        citation_map[getattr(node, "node_id")] = f"{base_label} — {header}"
+        citation_map[getattr(node, "node_id")] = citation_from_metadata(metadata)
     return citation_map
+
+
+def build_chunk_payload_map(nodes: list[Any]) -> dict[str, dict[str, Any]]:
+    payload_map: dict[str, dict[str, Any]] = {}
+    for node in nodes:
+        metadata = getattr(node, "metadata", {}) or {}
+        chunk_id = str(getattr(node, "node_id", "") or "")
+        if not chunk_id:
+            continue
+        original_text = str(metadata.get("original_text") or getattr(node, "text", "") or "")
+        payload_map[chunk_id] = {
+            "citation": citation_from_metadata(metadata),
+            "text": original_text,
+            "section_title": str(metadata.get("section_title", "") or ""),
+            "context_tag": str(metadata.get("context_tag", "") or ""),
+            "source_label": str(metadata.get("source_label", "") or ""),
+            "file_path": str(metadata.get("file_path", "") or ""),
+            "header_path": str(metadata.get("header_path", "") or ""),
+        }
+    return payload_map
 
 
 def refresh_chunk_citation_map(
@@ -859,6 +1007,7 @@ def refresh_chunk_citation_map(
     enriched_nodes: list[Any],
 ) -> GraphArtifacts:
     refreshed_map = build_chunk_citation_map(enriched_nodes)
+    refreshed_payload_map = build_chunk_payload_map(enriched_nodes)
     return GraphArtifacts(
         custom_entities=artifacts.custom_entities,
         entity_id_to_node=artifacts.entity_id_to_node,
@@ -868,6 +1017,7 @@ def refresh_chunk_citation_map(
         entity_sources=artifacts.entity_sources,
         relation_index=artifacts.relation_index,
         chunk_citation_map=refreshed_map,
+        chunk_payload_map=refreshed_payload_map,
     )
 
 
@@ -895,6 +1045,8 @@ def save_graph_checkpoint(
     }
     for filename, obj in payload.items():
         _pickle_dump(root / filename, obj)
+    if artifacts.chunk_payload_map:
+        _pickle_dump(root / "chunk_payload_map.pkl", artifacts.chunk_payload_map)
     if meta is not None:
         _json_dump(root / GRAPH_META_FILE, meta)
 
@@ -925,6 +1077,11 @@ def _normalize_loaded_graph_state(state: dict[str, Any]) -> GraphArtifacts:
         for entity in custom_entities.values():
             entity_id_to_node[entity.id] = entity
 
+    chunk_payload_map: dict[str, dict[str, Any]] = {}
+    for chunk_id, payload in (state.get("chunk_payload_map") or {}).items():
+        if isinstance(payload, dict):
+            chunk_payload_map[str(chunk_id)] = dict(payload)
+
     return GraphArtifacts(
         custom_entities=custom_entities,
         entity_id_to_node=entity_id_to_node,
@@ -934,6 +1091,7 @@ def _normalize_loaded_graph_state(state: dict[str, Any]) -> GraphArtifacts:
         entity_sources=entity_sources,
         relation_index=relation_index,
         chunk_citation_map=state.get("chunk_citation_map") or {},
+        chunk_payload_map=chunk_payload_map,
     )
 
 
@@ -948,6 +1106,10 @@ def load_graph_checkpoint(checkpoint_dir: str | Path) -> tuple[GraphArtifacts, d
     state: dict[str, Any] = {}
     for filename in GRAPH_REQUIRED_FILES:
         state[filename[:-4]] = _pickle_load(root / filename)
+    for filename in GRAPH_OPTIONAL_FILES:
+        path = root / filename
+        if path.exists():
+            state[filename[:-4]] = _pickle_load(path)
 
     meta_path = root / GRAPH_META_FILE
     meta = _json_load(meta_path) if meta_path.exists() else {"legacy_checkpoint": True}
@@ -1107,6 +1269,7 @@ def merge_equivalent_entities(
         entity_sources=merged_entity_sources,
         relation_index=rebuilt_index,
         chunk_citation_map=artifacts.chunk_citation_map,
+        chunk_payload_map=artifacts.chunk_payload_map,
     )
     report = {
         "merged_groups": merged_groups,
@@ -1149,6 +1312,25 @@ def is_placeholder_entity_name(name: str, label: str) -> bool:
     return False
 
 
+def is_low_signal_entity_name(name: str, label: str, description: str = "") -> bool:
+    normalized = normalize_lookup_text(name)
+    if normalized in LOW_SIGNAL_ENTITY_NAMES:
+        return True
+    if any(fragment in normalized for fragment in LOW_SIGNAL_ENTITY_SUBSTRINGS):
+        return True
+    if label == "TREATMENT" and normalized.startswith("SCREENING FOR "):
+        return True
+    if label == "TREATMENT" and normalized.endswith(" EVALUATION"):
+        return True
+    if label == "CONDITION" and normalized in {"VIRUSES"}:
+        return True
+    if label == "SYMPTOM" and normalized in {"DISABILITY", "STIGMA", "BRAIN STRUCTURE AND FUNCTION"}:
+        return True
+    if label == "RISK_FACTOR" and normalized in {"ABILITY TO FUNCTION", "ADVERSE CIRCUMSTANCES"}:
+        return True
+    return False
+
+
 def _is_strictly_valid_post_cleanup_relation(
     subject_type: str,
     relation: str,
@@ -1171,6 +1353,11 @@ def clean_graph_artifacts(
         name
         for name, entity in artifacts.custom_entities.items()
         if is_placeholder_entity_name(name, entity.label)
+        or is_low_signal_entity_name(
+            name,
+            entity.label,
+            artifacts.entity_descriptions.get(name, ""),
+        )
     }
 
     filtered_relation_metadata: dict[tuple[str, str, str], dict[str, Any]] = {}
@@ -1251,6 +1438,7 @@ def clean_graph_artifacts(
         entity_sources=kept_entity_sources,
         relation_index=rebuilt_relation_index,
         chunk_citation_map=artifacts.chunk_citation_map,
+        chunk_payload_map=artifacts.chunk_payload_map,
     )
     report = {
         "original_entities": original_entity_count,
@@ -1287,6 +1475,246 @@ def clean_graph_checkpoint(
     }
     save_graph_checkpoint(target_checkpoint_dir, cleaned, meta=meta)
     return cleaned, meta, report
+
+
+def _merge_chunk_citation_maps(
+    primary_map: dict[str, str],
+    secondary_map: dict[str, str],
+) -> tuple[dict[str, str], list[str]]:
+    merged = dict(primary_map)
+    collisions: list[str] = []
+    for chunk_id, citation in secondary_map.items():
+        existing = merged.get(chunk_id)
+        if existing is not None and existing != citation:
+            collisions.append(chunk_id)
+        merged[chunk_id] = citation
+    return merged, collisions
+
+
+def _merge_chunk_payload_maps(
+    primary_map: dict[str, dict[str, Any]],
+    secondary_map: dict[str, dict[str, Any]],
+) -> dict[str, dict[str, Any]]:
+    merged = {chunk_id: dict(payload) for chunk_id, payload in primary_map.items()}
+    for chunk_id, payload in secondary_map.items():
+        merged[chunk_id] = dict(payload)
+    return merged
+
+
+def _meta_lineage_entries(
+    checkpoint_dir: str | Path,
+    meta: dict[str, Any],
+) -> list[dict[str, Any]]:
+    lineage = meta.get("lineage")
+    if isinstance(lineage, list) and lineage:
+        return [dict(item) for item in lineage]
+
+    entry = {"checkpoint_dir": str(Path(checkpoint_dir))}
+    for key in (
+        "checkpoint_version",
+        "generated_at",
+        "prompt_version",
+        "repair_prompt_version",
+        "model_name",
+        "repair_model_name",
+        "node_count",
+        "nodes_hash",
+    ):
+        if key in meta:
+            entry[key] = meta[key]
+    return [entry]
+
+
+def merge_graph_artifacts(
+    primary_artifacts: GraphArtifacts,
+    secondary_artifacts: GraphArtifacts,
+    *,
+    primary_name: str = "primary",
+    secondary_name: str = "secondary",
+) -> tuple[GraphArtifacts, dict[str, Any]]:
+    state = _graph_state_from_artifacts(primary_artifacts)
+    custom_entities = state["custom_entities"]
+    entity_descriptions = state["entity_descriptions"]
+    entity_sources = state["entity_sources"]
+
+    merged_chunk_map, chunk_collisions = _merge_chunk_citation_maps(
+        state["chunk_citation_map"],
+        secondary_artifacts.chunk_citation_map,
+    )
+    state["chunk_citation_map"] = merged_chunk_map
+    state["chunk_payload_map"] = _merge_chunk_payload_maps(
+        state.get("chunk_payload_map", {}),
+        secondary_artifacts.chunk_payload_map,
+    )
+
+    report = {
+        "primary_name": primary_name,
+        "secondary_name": secondary_name,
+        "primary_entity_count": primary_artifacts.entity_count,
+        "secondary_entity_count": secondary_artifacts.entity_count,
+        "primary_relation_count": primary_artifacts.relation_count,
+        "secondary_relation_count": secondary_artifacts.relation_count,
+        "added_entities": 0,
+        "overlapping_entities": 0,
+        "type_conflicts": 0,
+        "type_conflict_entities": [],
+        "added_relations": 0,
+        "merged_relations": 0,
+        "chunk_citation_collisions": len(chunk_collisions),
+        "chunk_citation_collision_ids": chunk_collisions[:25],
+    }
+
+    for name, incoming_entity in secondary_artifacts.custom_entities.items():
+        incoming_description = (
+            secondary_artifacts.entity_descriptions.get(name, "")
+            or incoming_entity.properties.get("description", "")
+        )
+        incoming_sources = set(secondary_artifacts.entity_sources.get(name, set()))
+
+        if name not in custom_entities:
+            copied_entity = copy.deepcopy(incoming_entity)
+            copied_entity.name = name
+            copied_entity.properties = copy.deepcopy(getattr(incoming_entity, "properties", {}) or {})
+            copied_entity.properties["description"] = incoming_description
+            copied_entity.properties["sources"] = sorted(incoming_sources)
+            custom_entities[name] = copied_entity
+            state["entity_id_to_node"][copied_entity.id] = copied_entity
+            entity_descriptions[name] = incoming_description
+            entity_sources[name] = incoming_sources
+            report["added_entities"] += 1
+            continue
+
+        report["overlapping_entities"] += 1
+        existing = custom_entities[name]
+        existing_description = entity_descriptions.get(name, "") or existing.properties.get("description", "")
+        existing_sources = entity_sources.setdefault(name, set())
+        existing_sources.update(incoming_sources)
+        existing.properties["sources"] = sorted(existing_sources)
+
+        if existing.label != incoming_entity.label:
+            report["type_conflicts"] += 1
+            report["type_conflict_entities"].append(
+                {
+                    "name": name,
+                    f"{primary_name}_label": existing.label,
+                    f"{secondary_name}_label": incoming_entity.label,
+                }
+            )
+            if not existing_description and incoming_description:
+                entity_descriptions[name] = incoming_description
+                existing.properties["description"] = incoming_description
+            continue
+
+        if len(incoming_description) > len(existing_description):
+            entity_descriptions[name] = incoming_description
+            existing.properties["description"] = incoming_description
+
+    merged_relation_metadata: dict[tuple[str, str, str], dict[str, Any]] = {
+        key: {
+            "description": value.get("description", ""),
+            "strength": value.get("strength", 5),
+            "sources": set(value.get("sources", set())),
+        }
+        for key, value in state["relation_metadata"].items()
+    }
+
+    for relation_key, metadata in secondary_artifacts.relation_metadata.items():
+        subject_name, relation_label, target_name = relation_key
+        if subject_name not in custom_entities or target_name not in custom_entities:
+            continue
+
+        incoming_meta = {
+            "description": metadata.get("description", ""),
+            "strength": metadata.get("strength", 5),
+            "sources": set(metadata.get("sources", set())),
+        }
+        if relation_key in merged_relation_metadata:
+            existing_meta = merged_relation_metadata[relation_key]
+            existing_meta["strength"] = max(existing_meta.get("strength", 5), incoming_meta["strength"])
+            if len(incoming_meta["description"]) > len(existing_meta.get("description", "")):
+                existing_meta["description"] = incoming_meta["description"]
+            existing_meta["sources"].update(incoming_meta["sources"])
+            report["merged_relations"] += 1
+            continue
+
+        merged_relation_metadata[relation_key] = incoming_meta
+        report["added_relations"] += 1
+
+    merged_entity_id_to_node = {entity.id: entity for entity in custom_entities.values()}
+    rebuilt_relations: list[Relation] = []
+    for subject_name, relation_label, target_name in merged_relation_metadata:
+        subject_entity = custom_entities.get(subject_name)
+        target_entity = custom_entities.get(target_name)
+        if subject_entity is None or target_entity is None:
+            continue
+        rebuilt_relations.append(
+            Relation(
+                source_id=subject_entity.id,
+                target_id=target_entity.id,
+                label=relation_label,
+            )
+        )
+
+    merged_artifacts = GraphArtifacts(
+        custom_entities=custom_entities,
+        entity_id_to_node=merged_entity_id_to_node,
+        custom_relations=rebuilt_relations,
+        relation_metadata=merged_relation_metadata,
+        entity_descriptions=entity_descriptions,
+        entity_sources=entity_sources,
+        relation_index=build_relation_index(
+            custom_entities,
+            rebuilt_relations,
+            merged_entity_id_to_node,
+        ),
+        chunk_citation_map=merged_chunk_map,
+        chunk_payload_map=state["chunk_payload_map"],
+    )
+    cleaned_artifacts, cleanup_report = clean_graph_artifacts(merged_artifacts)
+    report["pre_cleanup_entities"] = merged_artifacts.entity_count
+    report["pre_cleanup_relations"] = merged_artifacts.relation_count
+    report["cleanup_report"] = cleanup_report
+    report["final_entities"] = cleaned_artifacts.entity_count
+    report["final_relations"] = cleaned_artifacts.relation_count
+    return cleaned_artifacts, report
+
+
+def merge_graph_checkpoints(
+    primary_checkpoint_dir: str | Path,
+    secondary_checkpoint_dir: str | Path,
+    target_checkpoint_dir: str | Path,
+) -> tuple[GraphArtifacts, dict[str, Any], dict[str, Any]]:
+    primary_artifacts, primary_meta = load_graph_checkpoint(primary_checkpoint_dir)
+    secondary_artifacts, secondary_meta = load_graph_checkpoint(secondary_checkpoint_dir)
+    merged_artifacts, merge_report = merge_graph_artifacts(
+        primary_artifacts,
+        secondary_artifacts,
+        primary_name="primary",
+        secondary_name="secondary",
+    )
+
+    lineage = _meta_lineage_entries(primary_checkpoint_dir, primary_meta) + _meta_lineage_entries(
+        secondary_checkpoint_dir,
+        secondary_meta,
+    )
+    meta = {
+        "checkpoint_version": CHECKPOINT_VERSION,
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "primary_checkpoint_dir": str(Path(primary_checkpoint_dir)),
+        "secondary_checkpoint_dir": str(Path(secondary_checkpoint_dir)),
+        "primary_meta": primary_meta,
+        "secondary_meta": secondary_meta,
+        "lineage": lineage,
+        "merge_report": merge_report,
+        "prompt_version": primary_meta.get("prompt_version") or secondary_meta.get("prompt_version"),
+        "repair_prompt_version": primary_meta.get("repair_prompt_version")
+        or secondary_meta.get("repair_prompt_version"),
+        "model_name": primary_meta.get("model_name") or secondary_meta.get("model_name"),
+        "repair_model_name": primary_meta.get("repair_model_name")
+        or secondary_meta.get("repair_model_name"),
+    }
+    save_graph_checkpoint(target_checkpoint_dir, merged_artifacts, meta=meta)
+    return merged_artifacts, meta, merge_report
 
 
 def _graph_state_from_artifacts(artifacts: GraphArtifacts) -> dict[str, Any]:
@@ -1331,6 +1759,10 @@ def _graph_state_from_artifacts(artifacts: GraphArtifacts) -> dict[str, Any]:
             for name, directions in artifacts.relation_index.items()
         },
         "chunk_citation_map": dict(artifacts.chunk_citation_map),
+        "chunk_payload_map": {
+            str(chunk_id): dict(payload)
+            for chunk_id, payload in artifacts.chunk_payload_map.items()
+        },
         "seen_relations": set(artifacts.relation_metadata.keys()),
     }
 
@@ -1345,6 +1777,7 @@ def _graph_artifacts_from_state(state: dict[str, Any]) -> GraphArtifacts:
         entity_sources=state["entity_sources"],
         relation_index=state["relation_index"],
         chunk_citation_map=state["chunk_citation_map"],
+        chunk_payload_map=state.get("chunk_payload_map", {}),
     )
 
 
@@ -1529,6 +1962,7 @@ Routing rules:
   - HAS_PREVALENCE: extract quantitative prevalence, incidence, sex ratio, or age-distribution statements as PREVALENCE_STATEMENT entities.
   - DIFFERENTIAL_DIAGNOSIS: extract disorders or conditions explicitly named in differential diagnosis.
   - HAS_COURSE: extract onset, progression, chronicity, remission, or developmental course statements as COURSE_FEATURE entities.
+  - TREATED_BY: extract treatment, therapy, service, support, or medication interventions only. Do not extract screening, diagnostic evaluation, referral pathways, initiatives, or guideline/program names as treatments.
 
 Output valid JSON only.
 """
@@ -1660,7 +2094,7 @@ def repair_graph_artifacts(
     top_k: int = 6,
     progress_every: int = 1,
 ) -> tuple[GraphArtifacts, dict[str, Any]]:
-    repair_targets = repair_targets or DSM_REPAIR_TARGETS
+    repair_targets = repair_targets or DEFAULT_REPAIR_TARGETS
     state = _graph_state_from_artifacts(artifacts)
     progress = ProgressPrinter(
         label="REPAIR",
@@ -1807,7 +2241,10 @@ def repair_graph_checkpoint(
     return repaired, meta, report
 
 
-def _empty_graph_state(chunk_citation_map: dict[str, str]) -> dict[str, Any]:
+def _empty_graph_state(
+    chunk_citation_map: dict[str, str],
+    chunk_payload_map: dict[str, dict[str, Any]],
+) -> dict[str, Any]:
     return {
         "custom_entities": {},
         "entity_id_to_node": {},
@@ -1817,6 +2254,7 @@ def _empty_graph_state(chunk_citation_map: dict[str, str]) -> dict[str, Any]:
         "relation_metadata": {},
         "relation_index": {},
         "chunk_citation_map": dict(chunk_citation_map),
+        "chunk_payload_map": {str(chunk_id): dict(payload) for chunk_id, payload in chunk_payload_map.items()},
         "seen_relations": set(),
         "next_index": 0,
         "stats": GraphExtractionStats(),
@@ -1864,6 +2302,11 @@ def _load_partial_graph_state(
         for key, value in (state.get("entity_sources") or {}).items()
     }
     state["seen_relations"] = set(state.get("seen_relations") or [])
+    state["chunk_payload_map"] = {
+        str(chunk_id): dict(payload)
+        for chunk_id, payload in (state.get("chunk_payload_map") or {}).items()
+        if isinstance(payload, dict)
+    }
     normalized_relation_metadata: dict[tuple[str, str, str], dict[str, Any]] = {}
     for key, value in (state.get("relation_metadata") or {}).items():
         normalized = dict(value or {})
@@ -1892,6 +2335,7 @@ def extract_graph_from_nodes(
     nodes_hash = _build_nodes_hash(enriched_nodes)
     model_name = _get_model_name(llm_client)
     chunk_citation_map = build_chunk_citation_map(enriched_nodes)
+    chunk_payload_map = build_chunk_payload_map(enriched_nodes)
 
     if force_rebuild:
         for filename in (PARTIAL_STATE_FILE, PARTIAL_META_FILE, GRAPH_PROGRESS_FILE, GRAPH_META_FILE):
@@ -1899,7 +2343,7 @@ def extract_graph_from_nodes(
             if path.exists():
                 path.unlink()
 
-    state = _empty_graph_state(chunk_citation_map)
+    state = _empty_graph_state(chunk_citation_map, chunk_payload_map)
     progress_path = root / GRAPH_PROGRESS_FILE
     start_idx = 0
 
@@ -2115,6 +2559,7 @@ def extract_graph_from_nodes(
         entity_sources=state["entity_sources"],
         relation_index=state["relation_index"],
         chunk_citation_map=state["chunk_citation_map"],
+        chunk_payload_map=state.get("chunk_payload_map", {}),
     )
     meta = {
         "checkpoint_version": CHECKPOINT_VERSION,
@@ -2346,13 +2791,123 @@ def _tokenize_question(text: str) -> set[str]:
     return {token for token in re.findall(r"[a-z0-9]+", text.lower()) if token}
 
 
-def classify_query(query_text: str) -> str:
+def _question_ngrams(question: str, *, max_words: int = 5) -> set[str]:
+    tokens = normalize_lookup_text(question).split()
+    grams: set[str] = set()
+    for start in range(len(tokens)):
+        for length in range(1, min(max_words, len(tokens) - start) + 1):
+            grams.add(" ".join(tokens[start : start + length]))
+    return grams
+
+
+def _resolve_preferred_entity_name(
+    preferred_names: list[str],
+    custom_entities: dict[str, EntityNode],
+    *,
+    label: str | None = None,
+) -> str | None:
+    for preferred_name in preferred_names:
+        resolved = resolve_entity_name(preferred_name, custom_entities, label=label)
+        if resolved is not None:
+            return resolved
+    return None
+
+
+def _match_symptom_aliases(
+    question: str,
+    custom_entities: dict[str, EntityNode],
+) -> list[str]:
+    normalized_question = f" {normalize_lookup_text(question)} "
+    matched: list[str] = []
+    for phrase, preferred_names in SYMPTOM_PHRASE_ALIASES.items():
+        if f" {phrase} " not in normalized_question:
+            continue
+        resolved = _resolve_preferred_entity_name(preferred_names, custom_entities, label="SYMPTOM")
+        if resolved and resolved not in matched:
+            matched.append(resolved)
+    return matched
+
+
+def _fuzzy_match_entities(
+    question: str,
+    custom_entities: dict[str, EntityNode],
+    *,
+    label: str | None = None,
+    max_results: int = 12,
+) -> list[str]:
+    ngrams = _question_ngrams(question)
+    if not ngrams:
+        return []
+
+    scored: list[tuple[float, str]] = []
+    ordered_entities = sorted(custom_entities.values(), key=lambda entity: len(entity.name), reverse=True)
+    for entity in ordered_entities:
+        if label and entity.label != label:
+            continue
+
+        normalized_name = normalize_lookup_text(entity.name)
+        if len(normalized_name) < 5:
+            continue
+        target_words = len(normalized_name.split())
+        threshold = 0.91 if target_words > 1 else 0.88
+        best_score = 0.0
+        for gram in ngrams:
+            gram_words = len(gram.split())
+            if abs(gram_words - target_words) > 1:
+                continue
+            if abs(len(gram) - len(normalized_name)) > max(4, len(normalized_name) // 3):
+                continue
+            score = SequenceMatcher(None, gram, normalized_name).ratio()
+            if score > best_score:
+                best_score = score
+        if best_score >= threshold:
+            scored.append((best_score, entity.name))
+
+    scored.sort(key=lambda item: (-item[0], -len(item[1]), item[1]))
+    matched: list[str] = []
+    for _, entity_name in scored:
+        if entity_name not in matched:
+            matched.append(entity_name)
+        if len(matched) >= max_results:
+            break
+    return matched
+
+
+def _looks_like_natural_symptom_question(
+    question: str,
+    custom_entities: dict[str, EntityNode] | None = None,
+) -> bool:
+    question_lower = question.lower()
+    token_set = _tokenize_question(question_lower)
+    has_pattern = any(pattern in question_lower for pattern in HUMAN_SYMPTOM_PATTERNS)
+    has_follow_up = any(pattern in question_lower for pattern in FOLLOW_UP_PATTERNS)
+    has_cues = bool(token_set & HUMAN_SYMPTOM_CUE_WORDS)
+    if not ((has_pattern or has_follow_up) and has_cues):
+        return False
+    if custom_entities is None:
+        return True
+    if match_entities_in_text(question, custom_entities, label="SYMPTOM"):
+        return True
+    return True
+
+
+def classify_query(
+    query_text: str,
+    custom_entities: dict[str, EntityNode] | None = None,
+) -> str:
     safety = assess_safety_risk(query_text)
     if safety["is_crisis"]:
         return "CRISIS"
     query_lower = query_text.lower()
     if _tokenize_question(query_lower) & MENTAL_HEALTH_KEYWORDS:
         return "IN_SCOPE"
+    if _looks_like_natural_symptom_question(query_text, custom_entities):
+        return "IN_SCOPE"
+    if detect_relation_intent(query_text)[0] is not None:
+        return "IN_SCOPE"
+    if custom_entities:
+        if match_entities_in_text(query_text, custom_entities):
+            return "IN_SCOPE"
     return "OUT_OF_SCOPE"
 
 
@@ -2361,6 +2916,7 @@ def match_entities_in_text(
     custom_entities: dict[str, EntityNode],
     *,
     label: str | None = None,
+    allow_fuzzy: bool = True,
 ) -> list[str]:
     normalized_question = f" {normalize_lookup_text(question)} "
     matched: list[str] = []
@@ -2380,6 +2936,16 @@ def match_entities_in_text(
                 matched.append(entity.name)
                 break
 
+    if label in {None, "SYMPTOM"}:
+        for entity_name in _match_symptom_aliases(question, custom_entities):
+            if entity_name not in matched:
+                matched.append(entity_name)
+
+    if allow_fuzzy:
+        for entity_name in _fuzzy_match_entities(question, custom_entities, label=label):
+            if entity_name not in matched:
+                matched.append(entity_name)
+
     deduped: list[str] = []
     for item in matched:
         if item not in deduped:
@@ -2387,17 +2953,28 @@ def match_entities_in_text(
     return deduped
 
 
-def resolve_entity_name(name: str, custom_entities: dict[str, EntityNode]) -> str | None:
+def resolve_entity_name(
+    name: str,
+    custom_entities: dict[str, EntityNode],
+    *,
+    label: str | None = None,
+) -> str | None:
     if name in custom_entities:
-        return name
+        if label is None or custom_entities[name].label == label:
+            return name
 
     target_canonical = canonicalize(name)
     target_normalized = normalize_lookup_text(name)
     for candidate in custom_entities:
+        if label is not None and custom_entities[candidate].label != label:
+            continue
         if canonicalize(candidate) == target_canonical:
             return candidate
         if normalize_lookup_text(candidate) == target_normalized:
             return candidate
+    fuzzy_matches = _fuzzy_match_entities(name, custom_entities, label=label, max_results=1)
+    if fuzzy_matches:
+        return fuzzy_matches[0]
     return None
 
 
@@ -2409,7 +2986,11 @@ RELATION_QUERY_HINTS = [
     ("comorbidity", ["comorbidity", "comorbid", "co-occur", "co occur", "cooccur"], ["COMORBID_WITH"]),
     ("course", ["development and course", "course", "onset", "progression"], ["HAS_COURSE"]),
     ("prevalence", ["prevalence", "incidence", "how common", "epidemiology", "sex ratio"], ["HAS_PREVALENCE"]),
-    ("treatment", ["treated", "treatment", "treatments", "medication", "medications"], ["TREATED_BY", "PRESCRIBES"]),
+    (
+        "treatment",
+        ["treated", "treatment", "treatments", "medication", "medications", "used for", "help with", "helps with"],
+        ["TREATED_BY", "PRESCRIBES"],
+    ),
     ("symptoms", ["symptom", "symptoms", "signs"], ["HAS_SYMPTOM"]),
 ]
 
@@ -2456,15 +3037,38 @@ def _filter_targets_for_display(
     relation_type: str,
     targets: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
+    filtered_targets = [
+        target
+        for target in targets
+        if not is_low_signal_entity_name(
+            target["name"],
+            str(target.get("type", "") or ""),
+            str(target.get("description", "") or ""),
+        )
+    ]
     if query_type == "symptoms" and relation_type == "HAS_SYMPTOM":
         filtered = [
             target
-            for target in targets
+            for target in filtered_targets
             if normalize_lookup_text(target["name"]) not in LOW_SIGNAL_SYMPTOM_NAMES
         ]
-        if filtered:
-            return filtered
-    return targets
+        return filtered
+    if query_type == "prevalence" and relation_type == "HAS_PREVALENCE":
+        prevalence_only = [
+            target
+            for target in filtered_targets
+            if str(target.get("type", "")).upper() == "PREVALENCE_STATEMENT"
+        ]
+        return prevalence_only or filtered_targets
+    if query_type == "differential_diagnosis" and relation_type == "DIFFERENTIAL_DIAGNOSIS":
+        explicit_differentials = [
+            target
+            for target in filtered_targets
+            if "co-occur" not in str(target.get("description", "")).lower()
+            and "comorbid" not in str(target.get("description", "")).lower()
+        ]
+        return explicit_differentials or filtered_targets
+    return filtered_targets
 
 
 def text_search_entities(
@@ -2484,6 +3088,8 @@ def text_search_entities(
     scored: list[dict[str, Any]] = []
     for name, entity in artifacts.custom_entities.items():
         description = artifacts.entity_descriptions.get(name, "") or entity.properties.get("description", "")
+        if is_low_signal_entity_name(name, entity.label, description):
+            continue
         corpus = f"{name} {description}".lower()
         score = sum(1 for term in query_terms if term in corpus)
         if score <= 0:
@@ -2502,6 +3108,65 @@ def text_search_entities(
     return scored[:limit]
 
 
+def entity_relation_lookup(
+    artifacts: GraphArtifacts,
+    entity_name: str,
+    *,
+    relation_filter: set[str] | None = None,
+) -> tuple[dict[str, list[dict[str, Any]]], dict[str, list[dict[str, Any]]], set[str]]:
+    resolved_name = resolve_entity_name(entity_name, artifacts.custom_entities)
+    canonical_name = resolved_name or canonicalize(entity_name)
+    outgoing: dict[str, list[dict[str, Any]]] = {}
+    incoming: dict[str, list[dict[str, Any]]] = {}
+    citations: set[str] = set()
+
+    for relation_label, target_name in artifacts.relation_index.get(canonical_name, {}).get("out", []):
+        if relation_filter is not None and relation_label not in relation_filter:
+            continue
+        target_entity = artifacts.custom_entities.get(target_name)
+        if target_entity is None:
+            continue
+        description = artifacts.entity_descriptions.get(target_name, "") or target_entity.properties.get("description", "")
+        if is_low_signal_entity_name(target_name, target_entity.label, description):
+            continue
+        metadata = artifacts.relation_metadata.get((canonical_name, relation_label, target_name), {})
+        citations.update(metadata.get("sources", set()))
+        outgoing.setdefault(relation_label, []).append(
+            {
+                "name": target_name,
+                "type": target_entity.label,
+                "strength": metadata.get("strength", 5),
+                "description": metadata.get("description", ""),
+            }
+        )
+
+    for relation_label, source_name in artifacts.relation_index.get(canonical_name, {}).get("in", []):
+        if relation_filter is not None and relation_label not in relation_filter:
+            continue
+        source_entity = artifacts.custom_entities.get(source_name)
+        if source_entity is None:
+            continue
+        description = artifacts.entity_descriptions.get(source_name, "") or source_entity.properties.get("description", "")
+        if is_low_signal_entity_name(source_name, source_entity.label, description):
+            continue
+        metadata = artifacts.relation_metadata.get((source_name, relation_label, canonical_name), {})
+        citations.update(metadata.get("sources", set()))
+        incoming.setdefault(relation_label, []).append(
+            {
+                "name": source_name,
+                "type": source_entity.label,
+                "strength": metadata.get("strength", 5),
+                "description": metadata.get("description", ""),
+            }
+        )
+
+    for values in outgoing.values():
+        values.sort(key=lambda item: (-int(item.get("strength", 0) or 0), item["name"]))
+    for values in incoming.values():
+        values.sort(key=lambda item: (-int(item.get("strength", 0) or 0), item["name"]))
+    return outgoing, incoming, citations
+
+
 def forward_lookup(
     artifacts: GraphArtifacts,
     condition_name: str,
@@ -2517,6 +3182,9 @@ def forward_lookup(
             continue
         target_entity = artifacts.custom_entities.get(target_name)
         if target_entity is None:
+            continue
+        description = artifacts.entity_descriptions.get(target_name, "") or target_entity.properties.get("description", "")
+        if is_low_signal_entity_name(target_name, target_entity.label, description):
             continue
         metadata = artifacts.relation_metadata.get((canonical_name, relation_label, target_name), {})
         citations.update(metadata.get("sources", set()))
@@ -2554,6 +3222,10 @@ def reverse_symptom_lookup(
             source_entity = artifacts.custom_entities.get(source_name)
             if source_entity is None or source_entity.label != "CONDITION":
                 continue
+            symptom_entity = artifacts.custom_entities.get(symptom_name)
+            symptom_description = artifacts.entity_descriptions.get(symptom_name, "") if symptom_entity else ""
+            if symptom_entity and is_low_signal_entity_name(symptom_name, symptom_entity.label, symptom_description):
+                continue
             condition_matches.setdefault(source_name, []).append(symptom_name)
             relation_key = (source_name, relation_label, symptom_name)
             metadata = artifacts.relation_metadata.get(relation_key, {})
@@ -2583,10 +3255,24 @@ def find_shared_and_diverging(
 
         merged_neighbors: dict[str, set[str]] = {}
         for relation_label, neighbor_name in artifacts.relation_index[name]["out"]:
+            neighbor_entity = artifacts.custom_entities.get(neighbor_name)
+            if neighbor_entity is not None and is_low_signal_entity_name(
+                neighbor_name,
+                neighbor_entity.label,
+                artifacts.entity_descriptions.get(neighbor_name, ""),
+            ):
+                continue
             merged_neighbors.setdefault(relation_label, set()).add(neighbor_name)
             metadata = artifacts.relation_metadata.get((name, relation_label, neighbor_name), {})
             citations.update(metadata.get("sources", set()))
         for relation_label, neighbor_name in artifacts.relation_index[name]["in"]:
+            neighbor_entity = artifacts.custom_entities.get(neighbor_name)
+            if neighbor_entity is not None and is_low_signal_entity_name(
+                neighbor_name,
+                neighbor_entity.label,
+                artifacts.entity_descriptions.get(neighbor_name, ""),
+            ):
+                continue
             merged_neighbors.setdefault(f"<-{relation_label}", set()).add(neighbor_name)
             metadata = artifacts.relation_metadata.get((neighbor_name, relation_label, name), {})
             citations.update(metadata.get("sources", set()))
@@ -2634,6 +3320,40 @@ def citation_strings(chunk_ids: set[str], chunk_citation_map: dict[str, str], li
         if len(deduped) >= limit:
             break
     return deduped
+
+
+def source_chunk_payloads(
+    chunk_ids: set[str],
+    artifacts: GraphArtifacts,
+    *,
+    limit: int = 6,
+) -> list[dict[str, Any]]:
+    payloads: list[dict[str, Any]] = []
+    seen_payloads: set[tuple[str, str]] = set()
+
+    for chunk_id in sorted(chunk_ids, key=lambda item: (artifacts.chunk_citation_map.get(item, item), item)):
+        payload = dict(artifacts.chunk_payload_map.get(chunk_id, {}))
+        citation = str(payload.get("citation") or artifacts.chunk_citation_map.get(chunk_id, chunk_id))
+        text = str(payload.get("text") or "")
+        dedupe_key = (citation, text)
+        if dedupe_key in seen_payloads:
+            continue
+        seen_payloads.add(dedupe_key)
+        payloads.append(
+            {
+                "chunk_id": str(chunk_id),
+                "citation": citation,
+                "text": text,
+                "section_title": str(payload.get("section_title", "") or ""),
+                "context_tag": str(payload.get("context_tag", "") or ""),
+                "source_label": str(payload.get("source_label", "") or ""),
+                "file_path": str(payload.get("file_path", "") or ""),
+                "header_path": str(payload.get("header_path", "") or ""),
+            }
+        )
+        if len(payloads) >= limit:
+            break
+    return payloads
 
 
 def global_query(question_text: str, community_summaries: dict[int, dict[str, Any]], top_k: int = 3) -> str:
@@ -2698,9 +3418,12 @@ def hybrid_query(
     community_summaries: dict[int, dict[str, Any]] | None = None,
     llm_client: Any = None,
     answer_with_llm: bool = False,
+    conversation_context: list[str] | None = None,
 ) -> dict[str, Any]:
     community_summaries = community_summaries or {}
-    query_class = classify_query(question)
+    conversation_context = [item.strip() for item in (conversation_context or []) if str(item or "").strip()]
+    analysis_text = " ".join([*conversation_context, question]) if conversation_context else question
+    query_class = classify_query(analysis_text, artifacts.custom_entities)
     safety = assess_safety_risk(question)
 
     if query_class == "CRISIS":
@@ -2712,6 +3435,7 @@ def hybrid_query(
             "multipath_result": "",
             "communities_used": [],
             "citations": [],
+            "source_chunks": [],
             "safety_resources": safety["resources"],
             "matched_safety_indicators": safety["matched_indicators"],
             "out_of_scope": False,
@@ -2728,6 +3452,7 @@ def hybrid_query(
             "multipath_result": "",
             "communities_used": [],
             "citations": [],
+            "source_chunks": [],
             "safety_resources": [],
             "matched_safety_indicators": [],
             "out_of_scope": True,
@@ -2735,14 +3460,50 @@ def hybrid_query(
             "query_type": "out_of_scope",
         }
 
-    mentioned_conditions = match_entities_in_text(question, artifacts.custom_entities, label="CONDITION")
-    mentioned_symptoms = match_entities_in_text(question, artifacts.custom_entities, label="SYMPTOM")
+    mentioned_entities = match_entities_in_text(analysis_text, artifacts.custom_entities)
+    mentioned_conditions = [
+        name
+        for name in mentioned_entities
+        if artifacts.custom_entities.get(name) is not None
+        and artifacts.custom_entities[name].label == "CONDITION"
+    ]
+    mentioned_symptoms = [
+        name
+        for name in mentioned_entities
+        if artifacts.custom_entities.get(name) is not None
+        and artifacts.custom_entities[name].label == "SYMPTOM"
+    ]
+    mentioned_other_entities = [
+        name
+        for name in mentioned_entities
+        if artifacts.custom_entities.get(name) is not None
+        and artifacts.custom_entities[name].label not in {"CONDITION", "SYMPTOM"}
+    ]
     question_lower = question.lower()
     relation_intent, relation_filter = detect_relation_intent(question)
     comparison_patterns = ["difference between", "compare", "vs", "versus", "distinguish"]
-    symptom_patterns = ["i have", "i feel", "experiencing", "suffering from", "what could", "what might"]
+    symptom_patterns = [
+        "i have",
+        "i feel",
+        "i am feeling",
+        "i'm feeling",
+        "experiencing",
+        "suffering from",
+        "what could",
+        "what might",
+        "lost my appetite",
+        "can't sleep",
+        "cant sleep",
+        "trouble sleeping",
+    ]
     is_comparison = any(pattern in question_lower for pattern in comparison_patterns)
-    is_symptom_query = any(pattern in question_lower for pattern in symptom_patterns) and bool(mentioned_symptoms)
+    is_symptom_query = (
+        bool(mentioned_symptoms)
+        and (
+            any(pattern in question_lower for pattern in symptom_patterns)
+            or _looks_like_natural_symptom_question(analysis_text, artifacts.custom_entities)
+        )
+    )
 
     multipath_result = ""
     query_type = "general"
@@ -2773,7 +3534,13 @@ def hybrid_query(
         ranked, relation_citations = reverse_symptom_lookup(mentioned_symptoms, artifacts)
         citation_ids.update(relation_citations)
         if ranked:
-            lines = [f"Conditions matching symptoms ({', '.join(mentioned_symptoms)}):"]
+            lines = [
+                (
+                    "Possible matching conditions based on the current symptom set "
+                    f"({', '.join(mentioned_symptoms)}). This is not a final diagnosis, "
+                    "and additional symptoms can change the ranking:"
+                )
+            ]
             for index, (condition_name, matches) in enumerate(ranked[:5], start=1):
                 lines.append(f"{index}. {condition_name} (matches {len(matches)}: {', '.join(matches)})")
             multipath_result = "\n".join(lines)
@@ -2830,7 +3597,51 @@ def hybrid_query(
             else:
                 multipath_result = f"No direct graph relationships were found for {condition_name}."
 
-    include_local_rows = not (mentioned_conditions and multipath_result)
+    elif mentioned_other_entities:
+        entity_name = mentioned_other_entities[0]
+        entity = artifacts.custom_entities.get(entity_name)
+        query_type = "entity_lookup"
+        outgoing, incoming, relation_citations = entity_relation_lookup(
+            artifacts,
+            entity_name,
+            relation_filter=set(relation_filter) if relation_filter else None,
+        )
+        citation_ids.update(relation_citations)
+        lines: list[str] = []
+        if entity is not None and entity.label in {"MEDICATION", "TREATMENT"}:
+            query_type = relation_intent or "entity_lookup"
+            lines.append(f"How {entity_name} is used:")
+            if incoming:
+                for relation_type, sources in sorted(incoming.items()):
+                    if relation_type in {"TREATED_BY", "PRESCRIBES", "SUITABLE_FOR"}:
+                        lines.append(f"{relation_type}:")
+                        for source in sources[:10]:
+                            lines.append(_format_relation_target(relation_type, source))
+            if outgoing:
+                for relation_type, targets in sorted(outgoing.items()):
+                    lines.append(f"{relation_type}:")
+                    for target in targets[:10]:
+                        lines.append(_format_relation_target(relation_type, target))
+        else:
+            lines.append(f"Information about {entity_name}:")
+            if incoming:
+                lines.append("Incoming relationships:")
+                for relation_type, sources in sorted(incoming.items()):
+                    lines.append(f"{relation_type}:")
+                    for source in sources[:10]:
+                        lines.append(_format_relation_target(relation_type, source))
+            if outgoing:
+                lines.append("Outgoing relationships:")
+                for relation_type, targets in sorted(outgoing.items()):
+                    lines.append(f"{relation_type}:")
+                    for target in targets[:10]:
+                        lines.append(_format_relation_target(relation_type, target))
+        if len(lines) > 1:
+            multipath_result = "\n".join(lines)
+        else:
+            multipath_result = f"No direct graph relationships were found for {entity_name}."
+
+    include_local_rows = not ((mentioned_conditions or mentioned_other_entities) and multipath_result)
     local_rows = text_search_entities(question, artifacts) if include_local_rows else []
     for row in local_rows:
         citation_ids.update(row.get("sources", []))
@@ -2840,6 +3651,7 @@ def hybrid_query(
     communities_used = re.findall(r"Community (\d+)", global_text) if global_text else []
 
     citations = citation_strings(citation_ids, artifacts.chunk_citation_map)
+    source_chunks = source_chunk_payloads(citation_ids, artifacts)
 
     if answer_with_llm and llm_client is not None:
         context_parts = []
@@ -2853,15 +3665,45 @@ def hybrid_query(
             context_parts.append(f"ENTITY CONTEXT:\n{local_text}")
         if global_text:
             context_parts.append(f"COMMUNITY CONTEXT:\n{global_text}")
+        if source_chunks:
+            chunk_text = "\n\n".join(
+                f"[{chunk['citation']}]\n{chunk['text']}"
+                for chunk in source_chunks
+                if chunk.get("text")
+            )
+            if chunk_text:
+                context_parts.append(f"SOURCE CHUNKS:\n{chunk_text}")
         if citations:
             context_parts.append("CITATIONS:\n" + "\n".join(f"- {citation}" for citation in citations))
 
+        answer_instructions = [
+            "Answer the user's mental health information question using the provided context.",
+            "Be factual, concise, and compassionate.",
+            "If the information is incomplete, say so clearly.",
+        ]
+        if query_type == "reverse_symptom":
+            answer_instructions.extend(
+                [
+                    "Treat symptom-based questions as a differential-style response, not a final diagnosis.",
+                    "Lead with the possible matching conditions supported by the graph context.",
+                    "State clearly that additional symptoms or history can change the ranking.",
+                ]
+            )
+        if conversation_context:
+            answer_instructions.append(
+                "Use both the current question and the prior session context when interpreting the symptom set."
+            )
+
         synthesis_prompt = (
-            "Answer the user's mental health information question using the provided context. "
-            "Be factual, concise, and compassionate. "
-            "If the information is incomplete, say so clearly.\n\n"
-            f"QUESTION:\n{question}\n\n"
-            f"CONTEXT:\n{os.linesep.join(context_parts)}\n\nANSWER:"
+            " ".join(answer_instructions)
+            + "\n\n"
+            + f"QUESTION:\n{question}\n\n"
+            + (
+                f"PRIOR SESSION CONTEXT:\n" + "\n".join(f"- {item}" for item in conversation_context) + "\n\n"
+                if conversation_context
+                else ""
+            )
+            + f"CONTEXT:\n{os.linesep.join(context_parts)}\n\nANSWER:"
         )
         try:
             answer = _extract_response_text(llm_client.complete(synthesis_prompt)).strip()
@@ -2881,6 +3723,7 @@ def hybrid_query(
         "multipath_result": multipath_result,
         "communities_used": communities_used,
         "citations": citations,
+        "source_chunks": source_chunks,
         "safety_resources": [],
         "matched_safety_indicators": [],
         "out_of_scope": False,
@@ -2905,6 +3748,11 @@ def structural_checks(
         ("classify_query: informational suicide query", classify_query("What is suicidal behavior disorder?") == "IN_SCOPE", classify_query("What is suicidal behavior disorder?")),
         ("classify_query: out of scope", classify_query("best pizza recipe") == "OUT_OF_SCOPE", classify_query("best pizza recipe")),
         ("classify_query: in scope", classify_query("What is depression?") == "IN_SCOPE", classify_query("What is depression?")),
+        (
+            "classify_query: medication entity in scope",
+            classify_query("What is lithium used for?", artifacts.custom_entities) == "IN_SCOPE",
+            classify_query("What is lithium used for?", artifacts.custom_entities),
+        ),
     ]
 
     if "DEPRESSION" in artifacts.relation_index:

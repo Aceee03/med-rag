@@ -21,6 +21,7 @@ warnings.filterwarnings(
 )
 
 from dotenv import load_dotenv
+from llm_utils import _maybe_build_openai_llm
 
 from graphrag_pipeline import (
     hybrid_query,
@@ -28,7 +29,6 @@ from graphrag_pipeline import (
     load_or_build_communities,
     load_or_build_community_summaries,
 )
-from pipeline import _maybe_build_openai_llm
 from pipeline_helpers import _build_nodes_hash, load_enriched_nodes_checkpoint
 from retrieval_stack import (
     CrossEncoderReranker,
@@ -83,6 +83,11 @@ def graph_contexts(result: dict[str, Any]) -> list[str]:
         contexts.append(result["local_result"])
     if result.get("global_result"):
         contexts.append(result["global_result"])
+    for chunk in result.get("source_chunks", []) or []:
+        citation = str(chunk.get("citation", "") or "Unknown source")
+        text = str(chunk.get("text", "") or "").strip()
+        if text:
+            contexts.append(f"[{citation}]\n{text}")
     if result.get("citations"):
         contexts.append("Citations:\n" + "\n".join(f"- {item}" for item in result["citations"]))
     return contexts
@@ -357,6 +362,10 @@ def main() -> int:
 
     print(f"Vector retriever backend: {vector_retriever.backend}")
     print(f"Reranker backend: {reranker.backend}")
+    if vector_retriever.backend_error:
+        print(f"Vector retriever fallback detail: {vector_retriever.backend_error}")
+    if reranker.backend_error:
+        print(f"Reranker fallback detail: {reranker.backend_error}")
     for system_name, rows in results.items():
         print(f"Saved {len(rows)} predictions for {system_name} -> {output_dir / f'{system_name}.jsonl'}")
 
