@@ -12,9 +12,6 @@ dist/
 build/
 *.egg
 
-# Checkpoints (large binary files)
-checkpoints/
-
 # Jupyter
 .ipynb_checkpoints/
 

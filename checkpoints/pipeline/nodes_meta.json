@@ -1,0 +1,19 @@
+{
+  "checkpoint_version": 1,
+  "builder": "load_or_build_markdown_nodes",
+  "parser": "MarkdownNodeParser",
+  "generated_at": "2026-04-14T23:29:09.242109+00:00",
+  "source_state": {
+    "input_dir": "C:\\univ\\research\\projects\\med-rag\\data\\markdown_filtered",
+    "file_count": 1,
+    "files": [
+      {
+        "path": "DSM.filtered.md",
+        "size": 2490333,
+        "mtime_ns": 1775760961312741700
+      }
+    ],
+    "fingerprint": "93b7490896f98b5b5c2d041bea44f28149bc026b10a49ddc93ebc34ca47efdde"
+  },
+  "source_manifest_fingerprint": null
+}

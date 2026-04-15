@@ -1,0 +1,9 @@
+{
+  "checkpoint_version": 1,
+  "saved_at": "2026-04-14T23:52:40.239078+00:00",
+  "node_count": 2047,
+  "saved_count": 2047,
+  "nodes_hash": "833a6021ff9e8180150e1d02edf79b17b964a7614f970d1c29c540b9e589d502",
+  "model_name": "gpt-oss:20b",
+  "prompt_version": "v3"
+}

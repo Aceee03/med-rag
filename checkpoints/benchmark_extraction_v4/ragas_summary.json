@@ -1,0 +1,32 @@
+[
+  {
+    "answer_relevancy": 0.9094168029644885,
+    "context_precision": 0.72256944439489,
+    "context_recall": 0.75,
+    "faithfulness": 0.6595176252319109,
+    "system": "vector_baseline",
+    "status": "partial",
+    "reason": "row-level NaN values: faithfulness(1/8)",
+    "metric_backend": "ragas"
+  },
+  {
+    "answer_relevancy": 0.8787009554046993,
+    "context_precision": 0.8249999999440798,
+    "context_recall": 0.5,
+    "faithfulness": 0.744089244089244,
+    "system": "vector_reranked",
+    "status": "partial",
+    "reason": "row-level NaN values: faithfulness(1/8)",
+    "metric_backend": "ragas"
+  },
+  {
+    "answer_relevancy": 0.9051212575656508,
+    "context_precision": 0.7954861110775202,
+    "context_recall": 0.875,
+    "faithfulness": 0.7605894105894105,
+    "system": "graph_rag",
+    "status": "partial",
+    "reason": "row-level NaN values: faithfulness(1/8)",
+    "metric_backend": "ragas"
+  }
+]

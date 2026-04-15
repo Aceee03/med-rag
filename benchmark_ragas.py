@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import re
 import warnings
+from numbers import Number
 from pathlib import Path
 from typing import Any
 
@@ -37,6 +39,33 @@ from retrieval_stack import (
     build_chunk_records,
     render_contexts,
 )
+
+DEFAULT_LOCAL_JUDGE_MODEL = "gpt-oss:20b"
+DEFAULT_LOCAL_JUDGE_EMBEDDINGS = "sentence-transformers/all-MiniLM-L6-v2"
+
+
+def _int_env(name: str, default: int) -> int:
+    raw = os.getenv(name)
+    if not raw:
+        return default
+    try:
+        return int(raw)
+    except ValueError:
+        return default
+
+
+def _thinking_env(name: str, default: bool | str | None = None) -> bool | str | None:
+    raw = os.getenv(name)
+    if not raw:
+        return default
+    value = raw.strip().lower()
+    if value in {"1", "true", "yes", "on"}:
+        return True
+    if value in {"0", "false", "no", "off"}:
+        return False
+    if value in {"low", "medium", "high"}:
+        return value
+    return default
 
 
 def load_eval_cases(path: str | Path) -> list[dict[str, Any]]:
@@ -195,20 +224,49 @@ def evaluate_with_ragas(
 ) -> dict[str, Any]:
     try:
         from ragas import EvaluationDataset, SingleTurnSample, evaluate
-        from ragas.embeddings.base import embedding_factory
-        from ragas.llms import llm_factory
+        from ragas.embeddings import LangchainEmbeddingsWrapper
+        from ragas.llms import LlamaIndexLLMWrapper
         from ragas.metrics import answer_relevancy, context_precision, context_recall, faithfulness
-        from openai import OpenAI
+        from ragas.run_config import RunConfig
+        from langchain_community.embeddings import HuggingFaceEmbeddings
+        from llama_index.llms.ollama import Ollama
     except Exception as exc:
         return _proxy_metric_summary(system_name, rows, f"ragas import failed: {exc}")
 
     try:
-        api_key = os.getenv("OPENAI_API_KEY")
-        if not api_key:
-            return _proxy_metric_summary(system_name, rows, "OPENAI_API_KEY not configured for ragas metrics")
-        client = OpenAI(api_key=api_key)
-        judge_llm = llm_factory("gpt-4o-mini", client=client)
-        judge_embeddings = embedding_factory("openai", model="text-embedding-3-small", client=client)
+        judge_model = os.getenv("RAGAS_JUDGE_MODEL", os.getenv("OLLAMA_MODEL", DEFAULT_LOCAL_JUDGE_MODEL))
+        judge_base_url = os.getenv("OLLAMA_BASE_URL", "http://127.0.0.1:11434")
+        judge_timeout = float(os.getenv("RAGAS_JUDGE_TIMEOUT", "300"))
+        judge_timeout_seconds = max(1, int(judge_timeout))
+        judge_max_workers = max(1, _int_env("RAGAS_MAX_WORKERS", 1))
+        judge_answer_relevancy_strictness = max(
+            1,
+            _int_env("RAGAS_ANSWER_RELEVANCY_STRICTNESS", 1),
+        )
+        judge_thinking = _thinking_env("RAGAS_JUDGE_THINKING", default=False)
+        run_config = RunConfig(timeout=judge_timeout_seconds, max_workers=judge_max_workers)
+        ollama_kwargs: dict[str, Any] = {
+            "model": judge_model,
+            "base_url": judge_base_url,
+            "request_timeout": judge_timeout,
+            "temperature": 0,
+        }
+        if judge_thinking is not None:
+            ollama_kwargs["thinking"] = judge_thinking
+        judge_llm = LlamaIndexLLMWrapper(
+            Ollama(**ollama_kwargs),
+            run_config=run_config,
+        )
+        judge_embeddings = LangchainEmbeddingsWrapper(
+            HuggingFaceEmbeddings(
+                model_name=os.getenv("RAGAS_EMBEDDING_MODEL", DEFAULT_LOCAL_JUDGE_EMBEDDINGS),
+            )
+        )
+        print(
+            "RAGAS judge config: "
+            f"model={judge_model}, timeout={judge_timeout_seconds}s, max_workers={judge_max_workers}, "
+            f"thinking={judge_thinking}, answer_relevancy_strictness={judge_answer_relevancy_strictness}"
+        )
 
         dataset = EvaluationDataset(
             samples=[
@@ -224,11 +282,18 @@ def evaluate_with_ragas(
         result = evaluate(
             dataset=dataset,
             metrics=[
-                type(answer_relevancy)(llm=judge_llm, embeddings=judge_embeddings),
+                type(answer_relevancy)(
+                    llm=judge_llm,
+                    embeddings=judge_embeddings,
+                    strictness=judge_answer_relevancy_strictness,
+                ),
                 type(context_precision)(llm=judge_llm),
                 type(context_recall)(llm=judge_llm),
                 type(faithfulness)(llm=judge_llm),
             ],
+            llm=judge_llm,
+            embeddings=judge_embeddings,
+            run_config=run_config,
             raise_exceptions=False,
             show_progress=False,
         )
@@ -240,6 +305,19 @@ def evaluate_with_ragas(
         summary = dict(result.to_dict())
     elif isinstance(result, dict):
         summary = dict(result)
+    elif isinstance(getattr(result, "_repr_dict", None), dict):
+        summary = dict(result._repr_dict)
+    elif isinstance(getattr(result, "scores", None), list) and result.scores:
+        metric_names = set().union(*(row.keys() for row in result.scores if isinstance(row, dict)))
+        summary = {}
+        for metric_name in metric_names:
+            values = [
+                float(row[metric_name])
+                for row in result.scores
+                if isinstance(row, dict) and isinstance(row.get(metric_name), Number)
+            ]
+            if values:
+                summary[metric_name] = sum(values) / len(values)
     else:
         summary = {"raw_result": str(result)}
     metric_values = [
@@ -248,10 +326,39 @@ def evaluate_with_ragas(
         summary.get("context_recall"),
         summary.get("faithfulness"),
     ]
-    if not any(isinstance(value, (int, float)) for value in metric_values):
+    if not any(isinstance(value, Number) for value in metric_values):
         return _proxy_metric_summary(system_name, rows, "ragas returned no numeric metric outputs")
     summary["system"] = system_name
-    summary["status"] = "ok"
+    row_level_nan_notes: list[str] = []
+    if isinstance(getattr(result, "scores", None), list) and result.scores:
+        for metric_name in ["answer_relevancy", "context_precision", "context_recall", "faithfulness"]:
+            nan_count = sum(
+                1
+                for row in result.scores
+                if isinstance(row, dict)
+                and isinstance(row.get(metric_name), Number)
+                and math.isnan(float(row[metric_name]))
+            )
+            if nan_count:
+                row_level_nan_notes.append(f"{metric_name}({nan_count}/{len(result.scores)})")
+    nan_metrics = [
+        metric_name
+        for metric_name, value in zip(
+            ["answer_relevancy", "context_precision", "context_recall", "faithfulness"],
+            metric_values,
+        )
+        if isinstance(value, Number) and math.isnan(float(value))
+    ]
+    reason_parts: list[str] = []
+    if nan_metrics:
+        reason_parts.append("ragas returned NaN for aggregate metrics: " + ", ".join(nan_metrics))
+    if row_level_nan_notes:
+        reason_parts.append("row-level NaN values: " + ", ".join(row_level_nan_notes))
+    if reason_parts:
+        summary["status"] = "partial"
+        summary["reason"] = "; ".join(reason_parts)
+    else:
+        summary["status"] = "ok"
     summary["metric_backend"] = "ragas"
     return summary
 
@@ -284,7 +391,13 @@ def write_summary(output_dir: Path, summaries: list[dict[str, Any]]) -> None:
         lines.append("| " + " | ".join(values) + " |")
         if summary.get("reason"):
             lines.append("")
-            prefix = "Proxy metrics for" if summary.get("status") == "proxy" else "Skipped"
+            status = summary.get("status")
+            if status == "proxy":
+                prefix = "Proxy metrics for"
+            elif status == "skipped":
+                prefix = "Skipped"
+            else:
+                prefix = "Notes for"
             lines.append(f"{prefix} `{summary.get('system')}`: {summary['reason']}")
     (output_dir / "ragas_summary.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
 

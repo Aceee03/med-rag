@@ -1,0 +1,32 @@
+[
+  {
+    "system": "vector_baseline",
+    "status": "proxy",
+    "reason": "proxy-only flag set",
+    "metric_backend": "proxy-token-overlap",
+    "answer_relevancy": 0.14995209549273003,
+    "context_precision": 0.07333068845661389,
+    "context_recall": 0.6871447266184109,
+    "faithfulness": 0.9775876432058135
+  },
+  {
+    "system": "vector_reranked",
+    "status": "proxy",
+    "reason": "proxy-only flag set",
+    "metric_backend": "proxy-token-overlap",
+    "answer_relevancy": 0.14707288910347893,
+    "context_precision": 0.07332438407593356,
+    "context_recall": 0.6650293420030262,
+    "faithfulness": 0.9776746742472666
+  },
+  {
+    "system": "graph_rag",
+    "status": "proxy",
+    "reason": "proxy-only flag set",
+    "metric_backend": "proxy-token-overlap",
+    "answer_relevancy": 0.33172740426095465,
+    "context_precision": 0.07808559250060941,
+    "context_recall": 0.8552363206968469,
+    "faithfulness": 0.9247451206247971
+  }
+]
