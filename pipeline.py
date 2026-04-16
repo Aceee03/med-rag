@@ -100,6 +100,7 @@ def _sync_to_neo4j(artifacts) -> None:
             artifacts.relation_metadata,
             artifacts.entity_sources,
             artifacts.chunk_citation_map,
+            artifacts.chunk_payload_map,
         )
         print("Neo4j sync complete.")
     finally:
@@ -158,7 +159,7 @@ def run_pipeline(args: argparse.Namespace) -> int:
 
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(line_buffering=True)
-    load_dotenv(Path(".env"), override=False)
+    load_dotenv(Path(".env"), override=True)
 
     graph_exists = graph_checkpoint_exists(args.graph_checkpoint_dir)
     need_source_pipeline = args.force_rebuild_graph or not graph_exists

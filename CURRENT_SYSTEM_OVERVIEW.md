@@ -147,9 +147,9 @@ If the same `session_id` is reused, the system also looks at recent previous que
 
 ## Important Current Reality
 
-Right now, the live runtime backend is not Neo4j yet.
+Right now, the live runtime backend is Neo4j-only.
 
-The live API is using the saved graph checkpoint loaded into memory through:
+The live API restores the graph from Neo4j into memory at startup and uses Neo4j for live graph lookups through:
 
 - `fastapi_app.py`
 - `graphrag_pipeline.py`
@@ -159,7 +159,7 @@ Also right now:
 - vector retrieval exists, but it is mostly separate in `retrieval_stack.py`
 - reranking exists, but it is mostly used in `benchmark_ragas.py`
 - BM25 is not a proper live layer yet
-- Neo4j sync exists, but Neo4j is not the live query engine yet
+- Neo4j sync exists, and Neo4j is now the live query engine
 
 ## Simple Summary
 
@@ -170,4 +170,4 @@ The system today is:
 - `pipeline.py` builds the graph
 - `safety_shield.py` protects the input
 
-The API currently answers from the merged local graph checkpoint, not from Neo4j and not from a full graph + vector hybrid runtime yet.
+The API now answers from Neo4j and no longer uses the local checkpoint as a runtime fallback, although the full graph + vector hybrid runtime is still not complete.
