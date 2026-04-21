@@ -71,6 +71,7 @@ CRISIS_SIGNAL_PATTERNS: dict[str, list[re.Pattern[str]]] = {
             r"\bwish(?:ed)? i were dead\b",
             r"\bbetter off dead\b",
             r"\bend it all\b",
+            r"\bend(?:ing)? it all\b",
         ]
     ],
     "imminence_or_plan": [
