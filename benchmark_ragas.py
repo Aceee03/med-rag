@@ -309,7 +309,7 @@ def build_argument_parser() -> argparse.ArgumentParser:
 def main() -> int:
     parser = build_argument_parser()
     args = parser.parse_args()
-    load_dotenv(Path(".env"), override=False)
+    load_dotenv(Path(".env"), override=True)
 
     if hasattr(os.sys.stdout, "reconfigure"):
         os.sys.stdout.reconfigure(line_buffering=True)

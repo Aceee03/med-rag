@@ -1,9 +1,10 @@
 from __future__ import annotations
 
-import tempfile
+import shutil
 import unittest
 from pathlib import Path
 from unittest.mock import Mock, patch
+from uuid import uuid4
 
 from fastapi.testclient import TestClient
 from llama_index.core.graph_stores.types import EntityNode, Relation
@@ -16,6 +17,8 @@ from graphrag_pipeline import (
     graph_checkpoint_exists,
     hybrid_query,
     load_graph_checkpoint,
+    load_or_build_communities,
+    load_or_build_community_summaries,
     merge_graph_artifacts,
 )
 
@@ -32,14 +35,77 @@ class _FakeRepairLLM:
         return _FakeResponse('{"entities": [], "relations": []}')
 
 
+class _CheckpointBackedService:
+    def __init__(self, checkpoint_dir: str) -> None:
+        self.graph_sync_source_dir = checkpoint_dir
+        self.graph_checkpoint_dir = checkpoint_dir
+        self.community_checkpoint_dir = checkpoint_dir
+        self.session_questions: dict[str, list[str]] = {}
+        self.graph_backend = None
+        self.query_backend_name = "neo4j_live"
+        self._neo4j_driver = None
+        self.answer_llm = None
+        self.artifacts, source_meta = load_graph_checkpoint(checkpoint_dir)
+        self.communities = load_or_build_communities(
+            self.artifacts,
+            checkpoint_dir=checkpoint_dir,
+            force_rebuild=False,
+        )
+        self.summaries = load_or_build_community_summaries(
+            self.communities,
+            self.artifacts,
+            checkpoint_dir=checkpoint_dir,
+            llm_client=None,
+            force_rebuild=False,
+        )
+        self.graph_meta = {
+            **source_meta,
+            "source": "neo4j",
+            "runtime_mode": "neo4j_only",
+            "graph_sync_source_dir": checkpoint_dir,
+        }
+
+    def query(
+        self,
+        question: str,
+        *,
+        answer_with_llm: bool = False,
+        session_id: str | None = None,
+    ) -> dict[str, object]:
+        history: list[str] = []
+        normalized_session_id = (session_id or "").strip()
+        if normalized_session_id:
+            history = list(self.session_questions.get(normalized_session_id, []))
+
+        result = hybrid_query(
+            question,
+            self.artifacts,
+            community_summaries=self.summaries,
+            llm_client=self.answer_llm,
+            answer_with_llm=answer_with_llm and self.answer_llm is not None,
+            conversation_context=history,
+            graph_backend=self.graph_backend,
+        )
+        if normalized_session_id:
+            self.session_questions[normalized_session_id] = [*history, question][-6:]
+        return result
+
+    def close(self) -> None:
+        return None
+
+
 class ClinicalApiEndToEndTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
         fastapi_app.get_service.cache_clear()
+        cls.service = _CheckpointBackedService("./checkpoints/clinical_dsm_merged")
+        cls.get_service_patcher = patch.object(fastapi_app, "get_service", return_value=cls.service)
+        cls.get_service_patcher.start()
         cls.client = TestClient(fastapi_app.app)
 
     @classmethod
     def tearDownClass(cls) -> None:
+        cls.get_service_patcher.stop()
         fastapi_app.get_service.cache_clear()
 
     def test_health_and_meta_routes(self) -> None:
@@ -141,47 +207,52 @@ class ClinicalApiEndToEndTests(unittest.TestCase):
 class PipelineClinicalRepairEndToEndTests(unittest.TestCase):
     def test_pipeline_can_rebuild_clinical_repair_checkpoint_in_one_command(self) -> None:
         fake_repair_llm = _FakeRepairLLM()
-        with tempfile.TemporaryDirectory() as temp_dir, patch.object(
+        target_graph_dir = Path("checkpoints") / f"tmp_clinical_graph_repaired_{uuid4().hex}"
+        shutil.rmtree(target_graph_dir, ignore_errors=True)
+
+        with patch.object(
             pipeline,
             "_maybe_build_openai_llm",
             return_value=fake_repair_llm,
         ):
-            target_graph_dir = Path(temp_dir) / "clinical_graph_repaired"
-            exit_code = pipeline.main(
-                [
-                    "--graph-checkpoint-dir",
-                    "./checkpoints/clinical_graph_clean",
-                    "--community-checkpoint-dir",
-                    str(target_graph_dir),
-                    "--repair-clinical-gaps",
-                    "--clinical-repair-graph-checkpoint-dir",
-                    str(target_graph_dir),
-                    "--clinical-repair-node-dir",
-                    "./checkpoints/clinical_pipeline",
-                    "--clinical-repair-supplemental-node-dir",
-                    "./checkpoints/pipeline",
-                    "--progress-every",
-                    "1",
-                ]
-            )
+            try:
+                exit_code = pipeline.main(
+                    [
+                        "--graph-checkpoint-dir",
+                        "./checkpoints/clinical_graph_clean",
+                        "--community-checkpoint-dir",
+                        str(target_graph_dir),
+                        "--repair-clinical-gaps",
+                        "--clinical-repair-graph-checkpoint-dir",
+                        str(target_graph_dir),
+                        "--clinical-repair-node-dir",
+                        "./checkpoints/clinical_pipeline",
+                        "--clinical-repair-supplemental-node-dir",
+                        "./checkpoints/pipeline",
+                        "--progress-every",
+                        "1",
+                    ]
+                )
 
-            self.assertEqual(exit_code, 0)
-            self.assertTrue(graph_checkpoint_exists(target_graph_dir))
+                self.assertEqual(exit_code, 0)
+                self.assertTrue(graph_checkpoint_exists(target_graph_dir))
 
-            artifacts, meta = load_graph_checkpoint(target_graph_dir)
-            self.assertIn("curation_report", meta)
-            self.assertIn("lineage", meta)
-            self.assertNotIn("source_meta", meta)
-            normalized_sources = {Path(source).as_posix() for source in meta["repair_node_sources"]}
-            self.assertIn("checkpoints/clinical_pipeline", normalized_sources)
+                artifacts, meta = load_graph_checkpoint(target_graph_dir)
+                self.assertIn("curation_report", meta)
+                self.assertIn("lineage", meta)
+                self.assertNotIn("source_meta", meta)
+                normalized_sources = {Path(source).as_posix() for source in meta["repair_node_sources"]}
+                self.assertIn("checkpoints/clinical_pipeline", normalized_sources)
 
-            result = hybrid_query(
-                "What treatments are available for autism spectrum disorder?",
-                artifacts,
-                community_summaries={},
-            )
-            self.assertIn("BEHAVIORAL THERAPY", result["answer"])
-            self.assertIn("PSYCHOSOCIAL INTERVENTIONS", result["answer"])
+                result = hybrid_query(
+                    "What treatments are available for autism spectrum disorder?",
+                    artifacts,
+                    community_summaries={},
+                )
+                self.assertIn("BEHAVIORAL THERAPY", result["answer"])
+                self.assertIn("PSYCHOSOCIAL INTERVENTIONS", result["answer"])
+            finally:
+                shutil.rmtree(target_graph_dir, ignore_errors=True)
 
 
 class Neo4jSyncBehaviorTests(unittest.TestCase):
@@ -208,6 +279,7 @@ class Neo4jSyncBehaviorTests(unittest.TestCase):
         self.assertEqual(write_args[3], self.artifacts.relation_metadata)
         self.assertEqual(write_args[4], self.artifacts.entity_sources)
         self.assertEqual(write_args[5], self.artifacts.chunk_citation_map)
+        self.assertEqual(write_args[6], self.artifacts.chunk_payload_map)
         fake_driver.close.assert_called_once()
 
     def test_sync_to_neo4j_raises_on_failed_connection_and_still_closes_driver(self) -> None:
@@ -271,6 +343,92 @@ def _build_test_artifacts(
         chunk_citation_map=chunk_citation_map or {},
         chunk_payload_map=chunk_payload_map or {},
     )
+
+
+class _FakeGraphBackend:
+    def __init__(self) -> None:
+        self.forward_calls: list[tuple[str, set[str] | None]] = []
+        self.entity_calls: list[tuple[str, set[str] | None]] = []
+        self.reverse_calls: list[list[str]] = []
+        self.text_calls: list[str] = []
+
+    def forward_lookup(
+        self,
+        condition_name: str,
+        *,
+        relation_filter: set[str] | None = None,
+    ) -> tuple[dict[str, list[dict[str, object]]], set[str]]:
+        self.forward_calls.append((condition_name, relation_filter))
+        return (
+            {
+                "HAS_SYMPTOM": [
+                    {
+                        "name": "FATIGUE",
+                        "type": "SYMPTOM",
+                        "strength": 9,
+                        "description": "Persistent low energy.",
+                    }
+                ]
+            },
+            {"chunk-1"},
+        )
+
+    def entity_relation_lookup(
+        self,
+        entity_name: str,
+        *,
+        relation_filter: set[str] | None = None,
+    ) -> tuple[dict[str, list[dict[str, object]]], dict[str, list[dict[str, object]]], set[str]]:
+        self.entity_calls.append((entity_name, relation_filter))
+        return {}, {}, set()
+
+    def reverse_symptom_lookup(self, symptom_names: list[str]) -> tuple[list[tuple[str, list[str]]], set[str]]:
+        self.reverse_calls.append(symptom_names)
+        return [("DEPRESSION", ["FATIGUE"])], {"chunk-1"}
+
+    def text_search_entities(self, question: str, *, limit: int = 10) -> list[dict[str, object]]:
+        self.text_calls.append(question)
+        return [
+            {
+                "name": "DEPRESSION",
+                "type": "CONDITION",
+                "description": "Mood disorder.",
+                "score": 4,
+                "sources": ["chunk-1"],
+            }
+        ]
+
+
+class HybridQueryBackendTests(unittest.TestCase):
+    def test_hybrid_query_uses_live_graph_backend_for_forward_lookup(self) -> None:
+        artifacts = _build_test_artifacts(
+            [
+                ("DEPRESSION", "CONDITION", "Mood disorder.", {"chunk-1"}),
+                ("FATIGUE", "SYMPTOM", "Low energy.", {"chunk-1"}),
+            ],
+            [],
+            chunk_citation_map={"chunk-1": "Test Citation"},
+        )
+        backend = _FakeGraphBackend()
+
+        result = hybrid_query(
+            "What are the symptoms of depression?",
+            artifacts,
+            community_summaries={},
+            graph_backend=backend,
+        )
+
+        self.assertEqual(result["query_type"], "symptoms")
+        self.assertIn("FATIGUE", result["answer"])
+        self.assertEqual(
+            backend.forward_calls,
+            [
+                ("DEPRESSION", {"HAS_SYMPTOM"}),
+                ("DEPRESSION", {"HAS_DIAGNOSTIC_CRITERION"}),
+            ],
+        )
+        self.assertEqual(backend.text_calls, [])
+        self.assertEqual(result["citations"], ["Test Citation"])
 
 
 class GraphMergeBehaviorTests(unittest.TestCase):

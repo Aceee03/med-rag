@@ -7,7 +7,7 @@ PDF ingestion uses `pymupdf4llm`. HTML ingestion uses `trafilatura`. No paid clo
 ## Requirements
 
 - Python 3.11
-- Neo4j, if you want graph sync or browser inspection
+- Neo4j, for graph sync and API runtime
 - OpenAI API key, if you want to build or rebuild the graph
 
 ## Setup
@@ -63,12 +63,12 @@ That will:
 ## Sync To Neo4j
 
 ```powershell
-python pipeline.py --graph-checkpoint-dir .\checkpoints\clinical_graph --clean-graph-checkpoint-dir .\checkpoints\clinical_graph_clean --community-checkpoint-dir .\checkpoints\clinical_graph_clean --write-neo4j
+python pipeline.py --graph-checkpoint-dir .\checkpoints\clinical_dsm_merged --community-checkpoint-dir .\checkpoints\clinical_dsm_merged --write-neo4j
 ```
 
 ## Run The API
 
-The API defaults to the merged DSM + clinical checkpoint when it exists, and falls back to the cleaned clinical checkpoint otherwise:
+The API is Neo4j-only at runtime. Sync the merged DSM + clinical checkpoint first, then start the server:
 
 ```powershell
 uvicorn fastapi_app:app --reload
@@ -157,11 +157,10 @@ The merge step:
 - merges duplicate entities, relations, sources, and chunk citations
 - runs one cleanup pass on the merged graph before saving it
 
-To query the merged graph through the API:
+To sync and query the merged graph through the API:
 
 ```powershell
-$env:GRAPH_CHECKPOINT_DIR=".\checkpoints\clinical_dsm_merged"
-$env:COMMUNITY_CHECKPOINT_DIR=".\checkpoints\clinical_dsm_merged"
+python pipeline.py --graph-checkpoint-dir .\checkpoints\clinical_dsm_merged --community-checkpoint-dir .\checkpoints\clinical_dsm_merged --write-neo4j
 uvicorn fastapi_app:app --reload
 ```
 

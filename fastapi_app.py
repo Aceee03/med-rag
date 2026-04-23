@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import time
 import warnings
 from functools import lru_cache
 from pathlib import Path
@@ -19,17 +20,24 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 from graphrag_pipeline import (
+    GraphArtifacts,
     graph_checkpoint_exists,
     hybrid_query,
-    load_graph_checkpoint,
     load_or_build_communities,
     load_or_build_community_summaries,
 )
 from llm_utils import _maybe_build_openai_llm
+from neo4j_helpers import (
+    Neo4jGraphQueryBackend,
+    create_driver,
+    get_neo4j_graph_stats,
+    restore_from_neo4j,
+    test_connection,
+)
 from safety_shield import US_CRISIS_RESOURCES
 
 
-load_dotenv(Path(".env"), override=False)
+load_dotenv(Path(".env"), override=True)
 
 
 DEFAULT_GRAPH_CHECKPOINT_CANDIDATES = (
@@ -38,8 +46,8 @@ DEFAULT_GRAPH_CHECKPOINT_CANDIDATES = (
 )
 
 
-def _default_graph_checkpoint_dir() -> str:
-    configured = os.getenv("GRAPH_CHECKPOINT_DIR")
+def _default_graph_sync_source_dir() -> str:
+    configured = os.getenv("GRAPH_CHECKPOINT_DIR") or os.getenv("GRAPH_SYNC_SOURCE_DIR")
     if configured:
         return configured
 
@@ -75,24 +83,97 @@ class QueryResponse(BaseModel):
 
 class GraphRAGService:
     def __init__(self) -> None:
-        self.graph_checkpoint_dir = _default_graph_checkpoint_dir()
-        self.community_checkpoint_dir = os.getenv("COMMUNITY_CHECKPOINT_DIR", self.graph_checkpoint_dir)
+        self.graph_sync_source_dir = _default_graph_sync_source_dir()
+        self.graph_checkpoint_dir = self.graph_sync_source_dir
+        self.community_checkpoint_dir = None
         self.session_questions: dict[str, list[str]] = {}
+        self.graph_backend: Any = None
+        self.query_backend_name = "neo4j_live"
+        self._neo4j_driver = None
 
-        self.artifacts, self.graph_meta = load_graph_checkpoint(self.graph_checkpoint_dir)
-        self.communities = load_or_build_communities(
-            self.artifacts,
-            checkpoint_dir=self.community_checkpoint_dir,
-            force_rebuild=False,
-        )
-        self.summaries = load_or_build_community_summaries(
-            self.communities,
-            self.artifacts,
-            checkpoint_dir=self.community_checkpoint_dir,
-            llm_client=None,
-            force_rebuild=False,
-        )
+        self._init_neo4j()
+
         self.answer_llm = _maybe_build_openai_llm("PIPELINE_ANSWER", "gpt-4o-mini", 400)
+
+    def _init_neo4j(self) -> None:
+        last_exc: Exception | None = None
+        delay_seconds = 2.0
+
+        for attempt in range(1, 4):
+            driver = create_driver()
+            try:
+                if not test_connection(driver):
+                    raise RuntimeError("Neo4j connection test failed.")
+                stats = get_neo4j_graph_stats(driver)
+                (
+                    custom_entities,
+                    entity_id_to_node,
+                    custom_relations,
+                    relation_metadata,
+                    entity_descriptions,
+                    entity_sources,
+                    relation_index,
+                    chunk_citation_map,
+                    chunk_payload_map,
+                ) = restore_from_neo4j(driver)
+                if not custom_entities:
+                    raise RuntimeError(
+                        "Neo4j is connected but the graph is empty. "
+                        "Sync the merged checkpoint first, for example: "
+                        "python pipeline.py --graph-checkpoint-dir "
+                        f"{self.graph_sync_source_dir} --community-checkpoint-dir "
+                        f"{self.graph_sync_source_dir} --write-neo4j"
+                    )
+
+                self._neo4j_driver = driver
+                self.graph_backend = Neo4jGraphQueryBackend(driver)
+                self.query_backend_name = "neo4j_live"
+                self.graph_meta = {
+                    "source": "neo4j",
+                    "database": os.getenv("NEO4J_DATABASE", "neo4j"),
+                    "runtime_mode": "neo4j_only",
+                    "graph_sync_source_dir": self.graph_sync_source_dir,
+                    "live_queries": True,
+                    **stats,
+                }
+                self.artifacts = GraphArtifacts(
+                    custom_entities=custom_entities,
+                    entity_id_to_node=entity_id_to_node,
+                    custom_relations=custom_relations,
+                    relation_metadata=relation_metadata,
+                    entity_descriptions=entity_descriptions,
+                    entity_sources=entity_sources,
+                    relation_index=relation_index,
+                    chunk_citation_map=chunk_citation_map,
+                    chunk_payload_map=chunk_payload_map,
+                )
+                self.communities = load_or_build_communities(
+                    self.artifacts,
+                    checkpoint_dir=None,
+                    force_rebuild=True,
+                )
+                self.summaries = load_or_build_community_summaries(
+                    self.communities,
+                    self.artifacts,
+                    checkpoint_dir=None,
+                    llm_client=None,
+                    force_rebuild=True,
+                )
+                return
+            except Exception as exc:
+                driver.close()
+                last_exc = exc
+                if attempt >= 3:
+                    raise
+                print(
+                    f"Neo4j init attempt {attempt}/3 failed: {exc}. "
+                    f"Retrying in {delay_seconds:.1f}s..."
+                )
+                time.sleep(delay_seconds)
+                delay_seconds *= 2.0
+
+        if last_exc is not None:
+            raise last_exc
 
     def query(
         self,
@@ -113,11 +194,18 @@ class GraphRAGService:
             llm_client=self.answer_llm,
             answer_with_llm=answer_with_llm and self.answer_llm is not None,
             conversation_context=history,
+            graph_backend=self.graph_backend,
         )
         if normalized_session_id:
             updated_history = [*history, question][-6:]
             self.session_questions[normalized_session_id] = updated_history
         return result
+
+    def close(self) -> None:
+        if self._neo4j_driver is not None:
+            self._neo4j_driver.close()
+            self._neo4j_driver = None
+        self.graph_backend = None
 
 
 @lru_cache(maxsize=1)
@@ -156,9 +244,12 @@ def health() -> dict[str, Any]:
     return {
         "status": "ok",
         "graph_checkpoint_dir": service.graph_checkpoint_dir,
+        "graph_sync_source_dir": service.graph_sync_source_dir,
         "community_checkpoint_dir": service.community_checkpoint_dir,
+        "query_backend": service.query_backend_name,
         "entity_count": service.artifacts.entity_count,
         "relation_count": service.artifacts.relation_count,
+        "chunk_count": len(service.artifacts.chunk_payload_map),
         "community_count": len(service.communities),
         "summary_count": len(service.summaries),
     }
@@ -169,8 +260,11 @@ def meta() -> dict[str, Any]:
     service = get_service()
     return {
         "graph_meta": service.graph_meta,
+        "graph_sync_source_dir": service.graph_sync_source_dir,
+        "query_backend": service.query_backend_name,
         "entity_count": service.artifacts.entity_count,
         "relation_count": service.artifacts.relation_count,
+        "chunk_count": len(service.artifacts.chunk_payload_map),
         "community_count": len(service.communities),
         "summary_count": len(service.summaries),
         "answer_llm_configured": service.answer_llm is not None,
@@ -218,3 +312,11 @@ def query(request: QueryRequest) -> QueryResponse:
         out_of_scope=result["out_of_scope"],
         communities_used=[str(item) for item in result["communities_used"]],
     )
+
+
+@app.on_event("shutdown")
+def shutdown_event() -> None:
+    if get_service.cache_info().currsize:
+        service = get_service()
+        service.close()
+        get_service.cache_clear()

@@ -9,7 +9,7 @@ This file is the first status file to check before starting new work on this pro
 - Active default graph: `checkpoints/clinical_dsm_merged`
 - API: `fastapi_app.py`
 - Main query pipeline: `graphrag_pipeline.py`
-- Neo4j exists, but it is not yet the main runtime backend
+- Neo4j is now the main runtime backend
 - Current query behavior supports:
   - graph-backed answers
   - exact supporting `source_chunks`
@@ -21,7 +21,7 @@ This file is the first status file to check before starting new work on this pro
 
 These are the next required implementation goals.
 
-1. Make Neo4j the main runtime backend for live querying
+1. Keep Neo4j as the only runtime backend and keep the merged graph synced
 2. Add a real persistent vector store for raw chunk embeddings using `pgvector` or `Pinecone`
 3. Add proper BM25 retrieval as a real retrieval layer
 4. Add the LLM safety classifier for ambiguous crisis cases
@@ -59,6 +59,8 @@ Out of scope for now:
 - Added basic multi-turn follow-up through `session_id`
 - Added regression tests for API, typo handling, symptom queries, and session follow-up
 - Added Neo4j sync utilities and read/write helper functions
+- Made the API Neo4j-only at runtime
+- Added Neo4j storage for exact `source_chunks`
 
 ## Partly Done
 
@@ -88,11 +90,10 @@ Out of scope for now:
 
 - Neo4j integration:
   - We can sync the graph to Neo4j and query it with helper functions
-  - Neo4j is not yet the main live runtime backend
+  - Neo4j is the main live runtime backend
 
 ## Not Done Yet
 
-- Neo4j as the main runtime backend for `/query`
 - A real persistent vector store such as `pgvector` or `Pinecone`
 - Live graph + vector hybrid retrieval in the main API path
 - Proper BM25 as a named retrieval component in the main system
@@ -112,14 +113,13 @@ Out of scope for now:
 ## Most Recent Completed Work
 
 - Returned exact source chunks instead of only citation labels
-- Switched the API default to the merged DSM + clinical graph
+- Switched the API runtime to Neo4j-only and kept the merged DSM + clinical graph as the default sync source
 - Made natural symptom phrasing count as in-scope
 - Added typo tolerance for queries like `depresion`
 - Added follow-up symptom context with `session_id`
 
 ## Immediate To-Do
 
-- Make Neo4j the main runtime backend
 - Add a persistent vector store for chunk embeddings
 - Add BM25 retrieval
 - Add the LLM safety classifier

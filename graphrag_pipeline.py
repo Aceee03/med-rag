@@ -2698,18 +2698,20 @@ def _heuristic_community_summary(
 def load_or_build_communities(
     artifacts: GraphArtifacts,
     *,
-    checkpoint_dir: str | Path,
+    checkpoint_dir: str | Path | None,
     force_rebuild: bool = False,
 ) -> dict[int, list[str]]:
-    root = _ensure_dir(checkpoint_dir)
-    path = root / COMMUNITIES_FILE
-    if path.exists() and not force_rebuild:
-        communities = load_communities(path)
-        if communities:
-            return communities
+    if checkpoint_dir is not None:
+        root = _ensure_dir(checkpoint_dir)
+        path = root / COMMUNITIES_FILE
+        if path.exists() and not force_rebuild:
+            communities = load_communities(path)
+            if communities:
+                return communities
 
     communities = detect_communities(artifacts)
-    save_communities(communities, path)
+    if checkpoint_dir is not None:
+        save_communities(communities, path)
     return communities
 
 
@@ -2717,24 +2719,25 @@ def load_or_build_community_summaries(
     communities: dict[int, list[str]],
     artifacts: GraphArtifacts,
     *,
-    checkpoint_dir: str | Path,
+    checkpoint_dir: str | Path | None,
     llm_client: Any = None,
     force_rebuild: bool = False,
     progress_every: int = 1,
 ) -> dict[int, dict[str, Any]]:
-    root = _ensure_dir(checkpoint_dir)
-    path = root / COMMUNITY_SUMMARY_FILE
-    if path.exists() and not force_rebuild:
-        raw = _json_load(path)
-        loaded: dict[int, dict[str, Any]] = {}
-        for key, value in raw.items():
-            try:
-                cast_key = int(key)
-            except (TypeError, ValueError):
-                continue
-            loaded[cast_key] = value
-        if loaded:
-            return loaded
+    if checkpoint_dir is not None:
+        root = _ensure_dir(checkpoint_dir)
+        path = root / COMMUNITY_SUMMARY_FILE
+        if path.exists() and not force_rebuild:
+            raw = _json_load(path)
+            loaded: dict[int, dict[str, Any]] = {}
+            for key, value in raw.items():
+                try:
+                    cast_key = int(key)
+                except (TypeError, ValueError):
+                    continue
+                loaded[cast_key] = value
+            if loaded:
+                return loaded
 
     summaries: dict[int, dict[str, Any]] = {}
     ordered_communities = sorted(communities.items(), key=lambda item: -len(item[1]))
@@ -2782,8 +2785,9 @@ def load_or_build_community_summaries(
         }
         progress.update(index, extra=f"community {community_id} | {len(members)} entities")
 
-    payload = {str(key): value for key, value in summaries.items()}
-    _json_dump(path, payload)
+    if checkpoint_dir is not None:
+        payload = {str(key): value for key, value in summaries.items()}
+        _json_dump(path, payload)
     return summaries
 
 
@@ -3411,6 +3415,204 @@ def _fallback_answer(
     return "\n\n".join(sections)
 
 
+def _filter_relation_groups_for_display(
+    grouped: dict[str, list[dict[str, Any]]],
+    artifacts: GraphArtifacts,
+) -> dict[str, list[dict[str, Any]]]:
+    filtered: dict[str, list[dict[str, Any]]] = {}
+    for relation_type, targets in grouped.items():
+        filtered_targets: list[dict[str, Any]] = []
+        for target in targets:
+            target_name = str(target.get("name", "") or "").strip()
+            if not target_name:
+                continue
+            entity = artifacts.custom_entities.get(target_name)
+            target_type = str(target.get("type", "") or (entity.label if entity is not None else ""))
+            entity_description = (
+                artifacts.entity_descriptions.get(target_name, "")
+                or (entity.properties.get("description", "") if entity is not None else "")
+            )
+            if is_low_signal_entity_name(target_name, target_type, entity_description):
+                continue
+            filtered_targets.append(
+                {
+                    **target,
+                    "name": target_name,
+                    "type": target_type,
+                }
+            )
+        if filtered_targets:
+            filtered_targets.sort(key=lambda item: (-int(item.get("strength", 0) or 0), item["name"]))
+            filtered[relation_type] = filtered_targets
+    return filtered
+
+
+def _forward_lookup_with_backend(
+    artifacts: GraphArtifacts,
+    condition_name: str,
+    *,
+    relation_filter: set[str] | None = None,
+    graph_backend: Any = None,
+) -> tuple[dict[str, list[dict[str, Any]]], set[str]]:
+    if graph_backend is None:
+        return forward_lookup(artifacts, condition_name, relation_filter=relation_filter)
+
+    resolved_name = resolve_entity_name(condition_name, artifacts.custom_entities)
+    canonical_name = resolved_name or canonicalize(condition_name)
+    grouped, citations = graph_backend.forward_lookup(
+        canonical_name,
+        relation_filter=relation_filter,
+    )
+    return _filter_relation_groups_for_display(grouped, artifacts), citations
+
+
+def _entity_relation_lookup_with_backend(
+    artifacts: GraphArtifacts,
+    entity_name: str,
+    *,
+    relation_filter: set[str] | None = None,
+    graph_backend: Any = None,
+) -> tuple[dict[str, list[dict[str, Any]]], dict[str, list[dict[str, Any]]], set[str]]:
+    if graph_backend is None:
+        return entity_relation_lookup(artifacts, entity_name, relation_filter=relation_filter)
+
+    resolved_name = resolve_entity_name(entity_name, artifacts.custom_entities)
+    canonical_name = resolved_name or canonicalize(entity_name)
+    outgoing, incoming, citations = graph_backend.entity_relation_lookup(
+        canonical_name,
+        relation_filter=relation_filter,
+    )
+    return (
+        _filter_relation_groups_for_display(outgoing, artifacts),
+        _filter_relation_groups_for_display(incoming, artifacts),
+        citations,
+    )
+
+
+def _reverse_symptom_lookup_with_backend(
+    symptom_names: list[str],
+    artifacts: GraphArtifacts,
+    *,
+    graph_backend: Any = None,
+) -> tuple[list[tuple[str, list[str]]], set[str]]:
+    if graph_backend is None:
+        return reverse_symptom_lookup(symptom_names, artifacts)
+
+    resolved_symptoms = sorted(
+        {
+            resolve_entity_name(name, artifacts.custom_entities) or canonicalize(name)
+            for name in symptom_names
+        }
+    )
+    return graph_backend.reverse_symptom_lookup(resolved_symptoms)
+
+
+def _find_shared_and_diverging_with_backend(
+    entity_names: list[str],
+    artifacts: GraphArtifacts,
+    *,
+    graph_backend: Any = None,
+) -> tuple[dict[str, dict[str, set[str]]], dict[str, set[str]], dict[str, dict[str, set[str]]], set[str]]:
+    if graph_backend is None:
+        return find_shared_and_diverging(entity_names, artifacts)
+
+    entity_neighbors: dict[str, dict[str, set[str]]] = {}
+    citations: set[str] = set()
+
+    for raw_name in entity_names:
+        name = resolve_entity_name(raw_name, artifacts.custom_entities) or canonicalize(raw_name)
+        if name not in artifacts.custom_entities:
+            continue
+
+        outgoing, incoming, relation_citations = _entity_relation_lookup_with_backend(
+            artifacts,
+            name,
+            graph_backend=graph_backend,
+        )
+        citations.update(relation_citations)
+
+        merged_neighbors: dict[str, set[str]] = {}
+        for relation_label, targets in outgoing.items():
+            target_names = {str(target["name"]) for target in targets if str(target.get("name", "")).strip()}
+            if target_names:
+                merged_neighbors[relation_label] = target_names
+        for relation_label, sources in incoming.items():
+            source_names = {str(source["name"]) for source in sources if str(source.get("name", "")).strip()}
+            if source_names:
+                merged_neighbors[f"<-{relation_label}"] = source_names
+        entity_neighbors[name] = merged_neighbors
+
+    if len(entity_neighbors) < 2:
+        return entity_neighbors, {}, {}, citations
+
+    all_relation_types = set()
+    for neighbors in entity_neighbors.values():
+        all_relation_types.update(neighbors.keys())
+
+    shared: dict[str, set[str]] = {}
+    unique: dict[str, dict[str, set[str]]] = {}
+    valid_names = list(entity_neighbors.keys())
+
+    for relation_type in all_relation_types:
+        neighbor_sets = [entity_neighbors[name].get(relation_type, set()) for name in valid_names]
+        if not neighbor_sets:
+            continue
+        intersection = neighbor_sets[0].copy()
+        for neighbor_set in neighbor_sets[1:]:
+            intersection &= neighbor_set
+        if intersection:
+            shared[relation_type] = intersection
+
+        for idx, name in enumerate(valid_names):
+            others_union: set[str] = set()
+            for other_idx, neighbor_set in enumerate(neighbor_sets):
+                if other_idx != idx:
+                    others_union |= neighbor_set
+            only_mine = neighbor_sets[idx] - others_union
+            if only_mine:
+                unique.setdefault(name, {})[relation_type] = only_mine
+
+    return entity_neighbors, shared, unique, citations
+
+
+def _text_search_entities_with_backend(
+    question: str,
+    artifacts: GraphArtifacts,
+    *,
+    limit: int = 10,
+    graph_backend: Any = None,
+) -> list[dict[str, Any]]:
+    if graph_backend is None:
+        return text_search_entities(question, artifacts, limit=limit)
+
+    rows = graph_backend.text_search_entities(question, limit=limit)
+    filtered_rows: list[dict[str, Any]] = []
+    for row in rows:
+        name = str(row.get("name", "") or "").strip()
+        if not name:
+            continue
+        entity = artifacts.custom_entities.get(name)
+        row_type = str(row.get("type", "") or (entity.label if entity is not None else ""))
+        description = str(
+            row.get("description", "")
+            or artifacts.entity_descriptions.get(name, "")
+            or (entity.properties.get("description", "") if entity is not None else "")
+        )
+        if is_low_signal_entity_name(name, row_type, description):
+            continue
+        filtered_rows.append(
+            {
+                "name": name,
+                "type": row_type,
+                "description": description,
+                "score": row.get("score", 0),
+                "sources": sorted(str(source) for source in (row.get("sources") or []) if source),
+            }
+        )
+    filtered_rows.sort(key=lambda item: (-float(item.get("score", 0) or 0), item["name"]))
+    return filtered_rows[:limit]
+
+
 def hybrid_query(
     question: str,
     artifacts: GraphArtifacts,
@@ -3419,6 +3621,7 @@ def hybrid_query(
     llm_client: Any = None,
     answer_with_llm: bool = False,
     conversation_context: list[str] | None = None,
+    graph_backend: Any = None,
 ) -> dict[str, Any]:
     community_summaries = community_summaries or {}
     conversation_context = [item.strip() for item in (conversation_context or []) if str(item or "").strip()]
@@ -3512,7 +3715,11 @@ def hybrid_query(
     if is_comparison and len(mentioned_conditions) >= 2:
         query_type = "comparison"
         first, second = mentioned_conditions[:2]
-        _, shared, unique, relation_citations = find_shared_and_diverging([first, second], artifacts)
+        _, shared, unique, relation_citations = _find_shared_and_diverging_with_backend(
+            [first, second],
+            artifacts,
+            graph_backend=graph_backend,
+        )
         citation_ids.update(relation_citations)
         lines = [f"Comparison: {first} vs {second}"]
         if shared:
@@ -3531,7 +3738,11 @@ def hybrid_query(
 
     elif is_symptom_query and mentioned_symptoms:
         query_type = "reverse_symptom"
-        ranked, relation_citations = reverse_symptom_lookup(mentioned_symptoms, artifacts)
+        ranked, relation_citations = _reverse_symptom_lookup_with_backend(
+            mentioned_symptoms,
+            artifacts,
+            graph_backend=graph_backend,
+        )
         citation_ids.update(relation_citations)
         if ranked:
             lines = [
@@ -3550,18 +3761,20 @@ def hybrid_query(
     elif mentioned_conditions:
         query_type = relation_intent or "forward_lookup"
         condition_name = mentioned_conditions[0]
-        grouped, relation_citations = forward_lookup(
+        grouped, relation_citations = _forward_lookup_with_backend(
             artifacts,
             condition_name,
             relation_filter=set(relation_filter) if relation_filter else None,
+            graph_backend=graph_backend,
         )
         citation_ids.update(relation_citations)
         supplemental_criteria: list[dict[str, Any]] = []
         if query_type == "symptoms":
-            criteria_grouped, criteria_citations = forward_lookup(
+            criteria_grouped, criteria_citations = _forward_lookup_with_backend(
                 artifacts,
                 condition_name,
                 relation_filter={"HAS_DIAGNOSTIC_CRITERION"},
+                graph_backend=graph_backend,
             )
             supplemental_criteria = criteria_grouped.get("HAS_DIAGNOSTIC_CRITERION", [])[:4]
             citation_ids.update(criteria_citations)
@@ -3601,10 +3814,11 @@ def hybrid_query(
         entity_name = mentioned_other_entities[0]
         entity = artifacts.custom_entities.get(entity_name)
         query_type = "entity_lookup"
-        outgoing, incoming, relation_citations = entity_relation_lookup(
+        outgoing, incoming, relation_citations = _entity_relation_lookup_with_backend(
             artifacts,
             entity_name,
             relation_filter=set(relation_filter) if relation_filter else None,
+            graph_backend=graph_backend,
         )
         citation_ids.update(relation_citations)
         lines: list[str] = []
@@ -3642,7 +3856,15 @@ def hybrid_query(
             multipath_result = f"No direct graph relationships were found for {entity_name}."
 
     include_local_rows = not ((mentioned_conditions or mentioned_other_entities) and multipath_result)
-    local_rows = text_search_entities(question, artifacts) if include_local_rows else []
+    local_rows = (
+        _text_search_entities_with_backend(
+            question,
+            artifacts,
+            graph_backend=graph_backend,
+        )
+        if include_local_rows
+        else []
+    )
     for row in local_rows:
         citation_ids.update(row.get("sources", []))
 

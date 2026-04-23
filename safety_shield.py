@@ -53,18 +53,25 @@ CRISIS_SIGNAL_PATTERNS: dict[str, list[re.Pattern[str]]] = {
     "explicit_self_harm_intent": [
         re.compile(pattern, re.IGNORECASE)
         for pattern in [
-            r"\bkill myself\b",
-            r"\bend my life\b",
-            r"\bcommit suicide\b",
+            r"\bkill(?:ing)? myself\b",
+            r"\bend(?:ing)? my life\b",
+            r"\bcommit(?:ting)? suicide\b",
             r"\bsuicidal\b",
             r"\bsuicide\b",
-            r"\bharm myself\b",
-            r"\bhurt myself\b",
-            r"\bself[- ]harm\b",
-            r"\bdon't want to live\b",
+            r"\bharm(?:ing)? myself\b",
+            r"\bhurt(?:ing)? myself\b",
+            r"\bself[- ]?harm\b",
+            r"\bdo not want to live\b",
             r"\bdont want to live\b",
-            r"\bwant to die\b",
-            r"\bwish i were dead\b",
+            r"\bdon't want to live\b",
+            r"\bcan'?t go on\b",
+            r"\bcannot go on\b",
+            r"\bno way? ?to live\b",
+            r"\bwant(?:ing)? to die\b",
+            r"\bwish(?:ed)? i were dead\b",
+            r"\bbetter off dead\b",
+            r"\bend it all\b",
+            r"\bend(?:ing)? it all\b",
         ]
     ],
     "imminence_or_plan": [
@@ -88,12 +95,19 @@ CRISIS_SIGNAL_PATTERNS: dict[str, list[re.Pattern[str]]] = {
     "severe_distress": [
         re.compile(pattern, re.IGNORECASE)
         for pattern in [
-            r"\bcan't go on\b",
+            r"\bcan'?t go on\b",
             r"\bcannot go on\b",
             r"\bno reason to live\b",
             r"\bnot safe\b",
             r"\babout to\b",
             r"\bneed help now\b",
+            r"\bhit rock bottom\b",
+            r"\bworthless\b",
+            r"\bhopeless\b",
+            r"\bempty\b",
+            r"\bgive up\b",
+            r"\bno point\b",
+            r"\bnot worth\b",
         ]
     ],
 }
