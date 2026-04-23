@@ -1,14 +1,13 @@
 \relax 
 \providecommand\hyper@newdestlabel[2]{}
-\providecommand*\HyPL@Entry[1]{}
+\providecommand\HyField@AuxAddToFields[1]{}
+\providecommand\HyField@AuxAddToCoFields[2]{}
 \citation{ji2023hallucination}
 \citation{lewis2020rag,guu2020realm}
 \citation{pan2024kgrag}
 \citation{hogan2021kg}
-\HyPL@Entry{0<</S/D>>}
 \@writefile{toc}{\contentsline {section}{\numberline {1}Introduction}{1}{section.1}\protected@file@percent }
 \citation{edge2024graphrag}
-\citation{neo4j2024}
 \citation{lewis2020rag}
 \citation{guu2020realm}
 \citation{hogan2021kg}
@@ -44,30 +43,26 @@
 \@writefile{toc}{\contentsline {subsection}{\numberline {5.3}Hallucination Reduction Objective}{7}{subsection.5.3}\protected@file@percent }
 \@writefile{toc}{\contentsline {section}{\numberline {6}System Architecture}{7}{section.6}\protected@file@percent }
 \@writefile{toc}{\contentsline {subsection}{\numberline {6.1}Pipeline Stages}{7}{subsection.6.1}\protected@file@percent }
-\@writefile{toc}{\contentsline {subsection}{\numberline {6.2}Runtime Query Architecture}{8}{subsection.6.2}\protected@file@percent }
-\@writefile{lof}{\contentsline {figure}{\numberline {1}{\ignorespaces Runtime query processing flow. All graph operations are dispatched through the Neo4j backend in production mode.}}{8}{figure.caption.3}\protected@file@percent }
-\newlabel{fig:runtime_arch}{{1}{8}{Runtime query processing flow. All graph operations are dispatched through the Neo4j backend in production mode}{figure.caption.3}{}}
-\@writefile{toc}{\contentsline {subsection}{\numberline {6.3}Query Backend Abstraction}{8}{subsection.6.3}\protected@file@percent }
-\@writefile{lot}{\contentsline {table}{\numberline {3}{\ignorespaces Query backend modes.}}{9}{table.caption.4}\protected@file@percent }
-\newlabel{tab:backend_modes}{{3}{9}{Query backend modes}{table.caption.4}{}}
-\@writefile{toc}{\contentsline {subsection}{\numberline {6.4}Session Context}{9}{subsection.6.4}\protected@file@percent }
-\@writefile{toc}{\contentsline {section}{\numberline {7}Safety Shield}{9}{section.7}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {6.2}Query Engine}{8}{subsection.6.2}\protected@file@percent }
+\@writefile{lof}{\contentsline {figure}{\numberline {1}{\ignorespaces Query processing flow. In-scope queries are routed through intent-specific graph retrieval branches before answer construction.}}{8}{figure.caption.3}\protected@file@percent }
+\newlabel{fig:query_flow}{{1}{8}{Query processing flow. In-scope queries are routed through intent-specific graph retrieval branches before answer construction}{figure.caption.3}{}}
+\@writefile{toc}{\contentsline {section}{\numberline {7}Safety Shield}{8}{section.7}\protected@file@percent }
 \@writefile{toc}{\contentsline {section}{\numberline {8}Query Processing Pipeline}{9}{section.8}\protected@file@percent }
 \@writefile{toc}{\contentsline {subsection}{\numberline {8.1}Query Classification}{9}{subsection.8.1}\protected@file@percent }
-\@writefile{toc}{\contentsline {subsection}{\numberline {8.2}Multi-Path Retrieval}{10}{subsection.8.2}\protected@file@percent }
-\@writefile{toc}{\contentsline {subsection}{\numberline {8.3}Answer Construction and Provenance}{10}{subsection.8.3}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {8.2}Multi-Path Retrieval}{9}{subsection.8.2}\protected@file@percent }
 \citation{reimers2019sentbert}
 \citation{nogueira2020crossencoder}
 \citation{es2024ragas}
-\@writefile{toc}{\contentsline {section}{\numberline {9}Experimental Setup}{11}{section.9}\protected@file@percent }
-\@writefile{toc}{\contentsline {subsection}{\numberline {9.1}Evaluation Framework}{11}{subsection.9.1}\protected@file@percent }
-\@writefile{toc}{\contentsline {subsection}{\numberline {9.2}Systems Under Comparison}{11}{subsection.9.2}\protected@file@percent }
-\@writefile{toc}{\contentsline {subsection}{\numberline {9.3}Evaluation Metrics}{11}{subsection.9.3}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {8.3}Answer Construction and Provenance}{10}{subsection.8.3}\protected@file@percent }
+\@writefile{toc}{\contentsline {section}{\numberline {9}Experimental Setup}{10}{section.9}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {9.1}Evaluation Framework}{10}{subsection.9.1}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {9.2}Systems Under Comparison}{10}{subsection.9.2}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {9.3}Evaluation Metrics}{10}{subsection.9.3}\protected@file@percent }
 \@writefile{toc}{\contentsline {section}{\numberline {10}Results and Discussion}{11}{section.10}\protected@file@percent }
 \@writefile{toc}{\contentsline {subsection}{\numberline {10.1}System Behavior Observations}{11}{subsection.10.1}\protected@file@percent }
-\@writefile{toc}{\contentsline {subsection}{\numberline {10.2}Architectural Trade-offs}{12}{subsection.10.2}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {10.2}Architectural Trade-offs}{11}{subsection.10.2}\protected@file@percent }
 \@writefile{toc}{\contentsline {section}{\numberline {11}Limitations and Future Work}{12}{section.11}\protected@file@percent }
-\@writefile{toc}{\contentsline {section}{\numberline {12}Conclusion}{13}{section.12}\protected@file@percent }
+\@writefile{toc}{\contentsline {section}{\numberline {12}Conclusion}{12}{section.12}\protected@file@percent }
 \bibstyle{plainnat}
 \bibdata{references}
 \bibcite{apa2013dsm5}{{1}{2013}{{American Psychiatric Association}}{{}}}
@@ -79,12 +74,11 @@
 \bibcite{ji2023hallucination}{{7}{2023}{{Ji et~al.}}{{Ji, Lee, Frieske, Yu, Su, Xu, Ishii, Bang, Madotto, and Fung}}}
 \bibcite{lewis2020rag}{{8}{2020}{{Lewis et~al.}}{{Lewis, Perez, Piktus, Petroni, Karpukhin, Goyal, K{\"u}ttler, Lewis, Yih, Rockt{\"a}schel, et~al.}}}
 \bibcite{nimh2024mental}{{9}{2024}{{National Institute of Mental Health}}{{}}}
-\bibcite{neo4j2024}{{10}{2024}{{Neo4j, Inc.}}{{}}}
-\bibcite{nogueira2020crossencoder}{{11}{2020}{{Nogueira et~al.}}{{Nogueira, Jiang, and Lin}}}
-\bibcite{nori2023medllm}{{12}{2023}{{Nori et~al.}}{{Nori, Lee, Zhang, Carignan, Edgar, Fusi, King, Larson, Li, Liu, et~al.}}}
-\bibcite{pan2024kgrag}{{13}{2024}{{Pan et~al.}}{{Pan, Luo, Wang, Chen, Wang, and Wu}}}
-\bibcite{reimers2019sentbert}{{14}{2019}{{Reimers and Gurevych}}{{}}}
-\bibcite{singhal2023medpalm}{{15}{2023}{{Singhal et~al.}}{{Singhal, Azizi, Tu, Mahdavi, Wei, Chung, Scales, Tanwani, Cole-Lewis, Pfohl, et~al.}}}
-\bibcite{traag2019leiden}{{16}{2019}{{Traag et~al.}}{{Traag, Waltman, and van Eck}}}
-\bibcite{who2024mental}{{17}{2024}{{World Health Organization}}{{}}}
-\gdef \@abspage@last{15}
+\bibcite{nogueira2020crossencoder}{{10}{2020}{{Nogueira et~al.}}{{Nogueira, Jiang, and Lin}}}
+\bibcite{nori2023medllm}{{11}{2023}{{Nori et~al.}}{{Nori, Lee, Zhang, Carignan, Edgar, Fusi, King, Larson, Li, Liu, et~al.}}}
+\bibcite{pan2024kgrag}{{12}{2024}{{Pan et~al.}}{{Pan, Luo, Wang, Chen, Wang, and Wu}}}
+\bibcite{reimers2019sentbert}{{13}{2019}{{Reimers and Gurevych}}{{}}}
+\bibcite{singhal2023medpalm}{{14}{2023}{{Singhal et~al.}}{{Singhal, Azizi, Tu, Mahdavi, Wei, Chung, Scales, Tanwani, Cole-Lewis, Pfohl, et~al.}}}
+\bibcite{traag2019leiden}{{15}{2019}{{Traag et~al.}}{{Traag, Waltman, and van Eck}}}
+\bibcite{who2024mental}{{16}{2024}{{World Health Organization}}{{}}}
+\gdef \@abspage@last{14}

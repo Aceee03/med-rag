@@ -55,7 +55,7 @@
 \begin{abstract}
 Large Language Models (LLMs) are increasingly used for medical information support, yet hallucinated or weakly grounded outputs remain a critical risk in healthcare contexts. This paper presents and evaluates a clinical GraphRAG framework for mental health question answering with explicit evidence grounding and safety-aware routing. The proposed pipeline constructs a domain knowledge graph from authoritative sources (WHO, NIMH, and DSM-5-derived material) through reproducible stages: source ingestion, markdown-based segmentation, contextual enrichment, schema-constrained entity--relation extraction over a fixed ontology of 11 entity types, 13 relation types, and 25 valid triplet patterns, followed by graph cleaning, targeted repair, and Leiden-based community summarization.
 
-At inference time, the system applies a safety-first decision layer for crisis detection, then performs graph-first retrieval for in-scope questions using condition lookup, reverse symptom lookup, comparison reasoning, and entity-centric relation exploration through a Neo4j-backed query backend. Responses include both chunk-level citations and source payloads to support traceability and manual verification.
+At inference time, the system applies a safety-first decision layer for crisis detection, then performs graph-first retrieval for in-scope questions using condition lookup, reverse symptom lookup, comparison reasoning, and entity-centric relation exploration. Responses include both chunk-level citations and source payloads to support traceability and manual verification.
 
 We evaluate three retrieval configurations---vector baseline, cross-encoder reranked vector, and the full GraphRAG pipeline---using both RAGAS metrics and deterministic proxy metrics. The resulting framework provides an end-to-end, auditable, and reproducible workflow for grounded clinical question answering.
 \end{abstract}
@@ -68,7 +68,7 @@ Recent LLM systems can generate fluent medical answers, but fluency is not equiv
 
 Retrieval-Augmented Generation (RAG)~\cite{lewis2020rag, guu2020realm} addresses part of this challenge by conditioning generation on external evidence. However, in clinical domains, many questions are relational rather than purely semantic: users ask about condition--symptom links, differential diagnosis, prevalence statements, treatment suitability, and safety signals. Standard vector-based RAG often fails to capture these multi-hop clinical relationships~\cite{pan2024kgrag}. A knowledge graph representation is well suited to these relation-centric queries because it explicitly stores typed entities and typed edges~\cite{hogan2021kg}.
 
-Graph-based RAG approaches, or GraphRAG~\cite{edge2024graphrag}, extend traditional RAG by structuring retrieved evidence as graph-based community summaries rather than flat document chunks. This paper documents and evaluates an implemented Clinical GraphRAG system centered on mental health question answering. The system includes reproducible data ingestion, checkpointed graph construction, schema-constrained extraction, graph cleaning and repair stages, safety gating, and a production API backed by Neo4j~\cite{neo4j2024}.
+Graph-based RAG approaches, or GraphRAG~\cite{edge2024graphrag}, extend traditional RAG by structuring retrieved evidence as graph-based community summaries rather than flat document chunks. This paper documents and evaluates an implemented Clinical GraphRAG system centered on mental health question answering. The system includes reproducible data ingestion, checkpointed graph construction, schema-constrained extraction, graph cleaning and repair stages, safety gating, and a query interface for graph-grounded answering.
 
 The practical goals of this work are:
 \begin{itemize}[nosep]
@@ -92,7 +92,7 @@ Lewis et al.~\cite{lewis2020rag} introduced RAG, combining a parametric language
 Knowledge graphs provide structured, queryable representations of domain knowledge~\cite{hogan2021kg}. In medicine, KGs have been used to organize symptoms, treatments, and diagnostic criteria, enabling relation-centric reasoning that complements LLM fluency~\cite{pan2024kgrag}. However, constructing clinically accurate KGs at scale remains challenging due to extraction noise, schema enforcement, and maintenance of provenance.
 
 \textbf{GraphRAG.}
-Edge et al.~\cite{edge2024graphrag} proposed GraphRAG, which partitions a knowledge graph into communities and generates summaries to support global queries. Our work builds on this paradigm, extending it with a clinical ontology, schema-constrained extraction, safety-aware query routing, and a Neo4j-backed production runtime.
+Edge et al.~\cite{edge2024graphrag} proposed GraphRAG, which partitions a knowledge graph into communities and generates summaries to support global queries. Our work builds on this paradigm, extending it with a clinical ontology, schema-constrained extraction, and safety-aware query routing.
 
 \textbf{Medical LLMs.}
 Large-scale clinical models such as Med-PaLM~\cite{singhal2023medpalm} and GPT-4-based medical systems~\cite{nori2023medllm} demonstrate strong clinical QA performance, but remain susceptible to hallucination. Our approach constrains generation to graph-retrieved evidence, providing an orthogonal mechanism for reducing unsupported claims.
@@ -260,7 +260,7 @@ These summaries serve as global context during query-time retrieval, enabling th
 
 \subsection{Task Definition}
 
-Let $q$ denote a user query in the mental health domain, and let $h$ denote optional session history for follow-up context (up to 6 prior questions). The system must return a response that is both clinically useful and auditable.
+Let $q$ denote a user query in the mental health domain, and let $h$ denote optional session history for follow-up context. The system must return a response that is both clinically useful and auditable.
 
 We define the returned payload as:
 \begin{equation}
@@ -320,7 +320,7 @@ The implemented system reduces $\mathcal{H}(A)$ through:
 
 \subsection{Pipeline Stages}
 
-The end-to-end pipeline is orchestrated through six stages, each checkpointed for reproducibility and resumability:
+The end-to-end pipeline is orchestrated through five stages, each checkpointed for reproducibility and resumability:
 
 \begin{enumerate}[nosep]
     \item \textbf{Source ingestion:} acquire and convert clinical sources to markdown with provenance manifest.
@@ -328,60 +328,31 @@ The end-to-end pipeline is orchestrated through six stages, each checkpointed fo
     \item \textbf{Graph extraction:} schema-constrained entity--relation extraction with partial-state checkpointing.
     \item \textbf{Cleaning and repair:} garbage filtering, normalization, merge of equivalent entities, targeted repair, curated payload injection.
     \item \textbf{Community detection:} Leiden partitioning and community summary generation.
-    \item \textbf{Neo4j synchronization:} write cleaned graph artifacts to Neo4j for production query serving.
 \end{enumerate}
 
-Each stage supports \texttt{--force-rebuild-*} flags to selectively override cached checkpoints, and the pipeline fails explicitly when an LLM is required but unavailable.
+Each stage produces checkpointed artifacts (pickled graph state, metadata files) that can be inspected, resumed, or selectively rebuilt. The pipeline fails explicitly when an LLM is required but unavailable, rather than silently degrading.
 
-\subsection{Runtime Query Architecture}
+\subsection{Query Engine}
 
-The production runtime is served as a FastAPI application backed by Neo4j (Figure~\ref{fig:runtime_arch}). At startup, the service:
-\begin{enumerate}[nosep]
-    \item resolves the graph sync source directory from environment variables or checkpoint candidates,
-    \item initializes a Neo4j connection with retry/backoff,
-    \item restores entities, relations, and chunk payloads from Neo4j into in-memory structures,
-    \item creates a \texttt{Neo4jGraphQueryBackend} for graph traversal operations.
-\end{enumerate}
+At query time, the system loads the checkpointed graph artifacts---entities, relations, provenance maps, and community summaries---into an in-memory graph store. The query engine orchestrates the full retrieval and answer construction pipeline:
 
 \begin{figure}[ht]
 \centering
 \fbox{\parbox{0.9\textwidth}{\small
-\textbf{Runtime Query Flow:}\\[4pt]
-\texttt{POST /query} $\rightarrow$ Safety Assessment $\rightarrow$ Query Classification\\
+\textbf{Query Processing Flow:}\\[4pt]
+User Query $\rightarrow$ Safety Assessment $\rightarrow$ Query Classification\\
 $\quad\hookrightarrow$ \textsc{Crisis}: immediate crisis response with resources\\
 $\quad\hookrightarrow$ \textsc{Out-of-Scope}: domain boundary response\\
-$\quad\hookrightarrow$ \textsc{In-Scope}: Intent Routing $\rightarrow$ Graph Retrieval (Neo4j) $\rightarrow$ Community Context\\
+$\quad\hookrightarrow$ \textsc{In-Scope}: Intent Routing $\rightarrow$ Graph Retrieval $\rightarrow$ Community Context\\
 $\quad\quad\rightarrow$ Citation Assembly $\rightarrow$ Optional LLM Synthesis $\rightarrow$ Structured Response
 }}
-\caption{Runtime query processing flow. All graph operations are dispatched through the Neo4j backend in production mode.}
-\label{fig:runtime_arch}
+\caption{Query processing flow. In-scope queries are routed through intent-specific graph retrieval branches before answer construction.}
+\label{fig:query_flow}
 \end{figure}
 
-The API exposes six endpoints: root directory (\texttt{GET /}), health check with entity/relation/community counts (\texttt{GET /health}), graph metadata (\texttt{GET /meta}), safety resources (\texttt{GET /safety-resources}), and the primary query endpoint (\texttt{POST /query}).
+The graph store supports four core query operations: \textit{forward lookup} (outgoing relations from a condition), \textit{entity relation lookup} (bidirectional relations for any entity), \textit{reverse symptom lookup} (conditions matching given symptoms), and \textit{text search} (keyword-based entity matching over names and descriptions). These operations are composed by the query router to serve different query intents through a unified orchestration function.
 
-\subsection{Query Backend Abstraction}
-
-The query orchestration function (\texttt{hybrid\_query}) accepts an optional \texttt{graph\_backend} parameter, enabling two modes through a single code path:
-
-\begin{table}[ht]
-\centering
-\caption{Query backend modes.}
-\label{tab:backend_modes}
-\begin{tabular}{@{}lll@{}}
-\toprule
-\textbf{Mode} & \textbf{Backend} & \textbf{Use Case} \\
-\midrule
-Production & \texttt{Neo4jGraphQueryBackend} & API service (live queries) \\
-Offline & \texttt{None} (in-memory fallback) & Testing, benchmarking \\
-\bottomrule
-\end{tabular}
-\end{table}
-
-The Neo4j backend implements four query methods: \texttt{forward\_lookup} (outgoing relations from a condition), \texttt{entity\_relation\_lookup} (bidirectional relations for any entity), \texttt{reverse\_symptom\_lookup} (conditions matching given symptoms), and \texttt{text\_search\_entities} (full-text keyword search over entity names and descriptions).
-
-\subsection{Session Context}
-
-The API maintains process-local session state indexed by \texttt{session\_id}. Each session stores up to 6 prior questions (truncated on overflow), which are prepended to the current query for conversational context during classification and routing. This design supports follow-up questions (e.g., ``What about its treatment?'' after asking about depression symptoms) without requiring the user to restate context.
+Session history can optionally be maintained to support follow-up questions (e.g., ``What about its treatment?'' after asking about depression symptoms), where prior questions are prepended to the current query for context during classification and routing.
 
 % =====================================================================
 \section{Safety Shield}
@@ -441,7 +412,7 @@ After graph retrieval, the system constructs a response with full provenance:
 
 \begin{enumerate}[nosep]
     \item \textbf{Citation assembly:} chunk IDs from retrieved relations and entities are resolved to human-readable citation strings (format: \textit{Source Authority --- Document Title --- Section}).
-    \item \textbf{Source chunk payloads:} full source chunk records are included in the response, each containing the original text, section title, context tag, source label, file path, and header path.
+    \item \textbf{Source chunk payloads:} full source chunk records are included in the response, each containing the original text, section title, context tag, and source label.
     \item \textbf{Optional LLM synthesis:} when enabled, an LLM generates a natural language answer from the assembled evidence context. The LLM receives only retrieved facts---it does not draw on parametric knowledge.
     \item \textbf{Fallback behavior:} when evidence is insufficient, the system returns a structured but limited response rather than generating unsupported content.
 \end{enumerate}
@@ -499,11 +470,9 @@ We report qualitative and structural observations from the implemented system, a
 
 \subsection{Architectural Trade-offs}
 
-\textbf{Graph-first vs.\ hybrid retrieval.} The current runtime uses graph-first retrieval without vector search in the live query path. This ensures all returned evidence has explicit graph provenance, but may miss relevant information that exists in source text but was not captured during graph extraction. Vector retrieval exists in the codebase for benchmarking but is not integrated into the production query path.
+\textbf{Graph-first vs.\ hybrid retrieval.} The current system uses graph-first retrieval without vector search in the query path. This ensures all returned evidence has explicit graph provenance, but may miss relevant information that exists in source text but was not captured during graph extraction. A hybrid approach combining graph and vector retrieval could improve recall.
 
 \textbf{Rule-based vs.\ learned routing.} Query classification uses keyword matching, regex patterns, and fuzzy entity matching rather than a trained classifier. This approach is transparent and deterministic but less flexible for unexpected phrasings. The symptom phrase alias table (22 colloquial-to-clinical mappings) partially mitigates this limitation.
-
-\textbf{Neo4j dependency.} The production runtime requires Neo4j availability. This introduces an operational dependency but enables efficient graph traversal, full-text search indexes, and scalable query execution. The dual-backend architecture allows offline testing without Neo4j.
 
 % =====================================================================
 \section{Limitations and Future Work}
@@ -515,11 +484,9 @@ We report qualitative and structural observations from the implemented system, a
 
 \textbf{Safety coverage.} The regex-based crisis detection is effective for explicit self-harm language but may miss nuanced, implicit, or multilingual crisis signals. Integration with a trained safety classifier could improve recall.
 
-\textbf{Session memory.} Session history is process-local with no persistence across restarts and no TTL-based eviction. A durable session store would improve conversational continuity.
-
 \textbf{Evaluation scale.} The current evaluation uses proxy metrics and targeted regression tests. A larger-scale evaluation with clinician-annotated queries and standardized medical QA benchmarks would strengthen quantitative claims.
 
-\textbf{Hybrid retrieval.} Integrating vector retrieval into the production query path alongside graph-first retrieval could capture information present in source text but absent from the extracted graph, improving recall without sacrificing provenance.
+\textbf{Hybrid retrieval.} Integrating vector retrieval alongside graph-first retrieval could capture information present in source text but absent from the extracted graph, improving recall without sacrificing provenance.
 
 % =====================================================================
 \section{Conclusion}
@@ -527,7 +494,7 @@ We report qualitative and structural observations from the implemented system, a
 
 We present a clinical GraphRAG framework for mental health question answering that prioritizes evidence grounding, safety, and provenance over unconstrained generation. The system constructs a knowledge graph from authoritative clinical sources (WHO, NIMH, DSM-5) using schema-constrained extraction with a fixed ontology of 11 entity types, 13 relation types, and 25 valid triplet patterns. Post-extraction cleaning, normalization, targeted repair, and curated payload injection ensure graph quality.
 
-At query time, a safety-first routing layer detects crisis signals before any retrieval occurs. In-scope queries are processed through graph-first multi-path retrieval with Neo4j-backed traversal, returning structured answers with full citation chains and source chunk payloads. The system supports forward lookup, reverse symptom matching, condition comparison, and community-level contextual grounding.
+At query time, a safety-first routing layer detects crisis signals before any retrieval occurs. In-scope queries are processed through graph-first multi-path retrieval, returning structured answers with full citation chains and source chunk payloads. The system supports forward lookup, reverse symptom matching, condition comparison, and community-level contextual grounding.
 
 The end-to-end pipeline is fully checkpointed and reproducible, with integration tests validating routing behavior, answer quality constraints, and safety logic. A benchmark harness enables systematic comparison of vector, reranked vector, and GraphRAG retrieval configurations.
 
