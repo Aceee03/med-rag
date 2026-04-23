@@ -1,0 +1,119 @@
+\begin{thebibliography}{17}
+\providecommand{\natexlab}[1]{#1}
+\providecommand{\url}[1]{\texttt{#1}}
+\expandafter\ifx\csname urlstyle\endcsname\relax
+  \providecommand{\doi}[1]{doi: #1}\else
+  \providecommand{\doi}{doi: \begingroup \urlstyle{rm}\Url}\fi
+
+\bibitem[{American Psychiatric Association}(2013)]{apa2013dsm5}
+{American Psychiatric Association}.
+\newblock \emph{Diagnostic and Statistical Manual of Mental Disorders
+  ({DSM-5})}.
+\newblock American Psychiatric Publishing, 5th edition, 2013.
+
+\bibitem[Barbaresi(2021)]{barbaresi2021trafilatura}
+Adrien Barbaresi.
+\newblock Trafilatura: A web scraping library and command-line tool for text
+  discovery and extraction.
+\newblock In \emph{Proceedings of the Joint Conference of the 59th Annual
+  Meeting of the Association for Computational Linguistics}, pages 122--131,
+  2021.
+
+\bibitem[Edge et~al.(2024)Edge, Trinh, Cheng, Bradley, Chao, Mody, Truitt, and
+  Larson]{edge2024graphrag}
+Darren Edge, Ha~Trinh, Newman Cheng, Joshua Bradley, Alex Chao, Apurva Mody,
+  Steven Truitt, and Jonathan Larson.
+\newblock From local to global: A graph {RAG} approach to query-focused
+  summarization.
+\newblock \emph{arXiv preprint arXiv:2404.16130}, 2024.
+
+\bibitem[Es et~al.(2024)Es, James, Espinosa-Anke, and Schockaert]{es2024ragas}
+Shahul Es, Jithin James, Luis Espinosa-Anke, and Steven Schockaert.
+\newblock {RAGAS}: Automated evaluation of retrieval augmented generation.
+\newblock \emph{arXiv preprint arXiv:2309.15217}, 2024.
+
+\bibitem[Guu et~al.(2020)Guu, Lee, Tung, Pasupat, and Chang]{guu2020realm}
+Kelvin Guu, Kenton Lee, Zora Tung, Panupong Pasupat, and Ming-Wei Chang.
+\newblock {REALM}: Retrieval-augmented language model pre-training.
+\newblock \emph{arXiv preprint arXiv:2002.10157}, 2020.
+
+\bibitem[Hogan et~al.(2021)Hogan, Blomqvist, Cochez, d'Amato, de~Melo,
+  Gutierrez, Kirrane, Gayo, Navigli, Neumaier, et~al.]{hogan2021kg}
+Aidan Hogan, Eva Blomqvist, Michael Cochez, Claudia d'Amato, Gerard de~Melo,
+  Claudio Gutierrez, Sabrina Kirrane, Jos{\'e} Emilio~Labra Gayo, Roberto
+  Navigli, Sebastian Neumaier, et~al.
+\newblock Knowledge graphs.
+\newblock \emph{ACM Computing Surveys}, 54\penalty0 (4):\penalty0 1--37, 2021.
+
+\bibitem[Ji et~al.(2023)Ji, Lee, Frieske, Yu, Su, Xu, Ishii, Bang, Madotto, and
+  Fung]{ji2023hallucination}
+Ziwei Ji, Nayeon Lee, Rita Frieske, Tiezheng Yu, Dan Su, Yan Xu, Etsuko Ishii,
+  Yejin Bang, Andrea Madotto, and Pascale Fung.
+\newblock Survey of hallucination in natural language generation.
+\newblock \emph{ACM Computing Surveys}, 55\penalty0 (12):\penalty0 1--38, 2023.
+
+\bibitem[Lewis et~al.(2020)Lewis, Perez, Piktus, Petroni, Karpukhin, Goyal,
+  K{\"u}ttler, Lewis, Yih, Rockt{\"a}schel, et~al.]{lewis2020rag}
+Patrick Lewis, Ethan Perez, Aleksandra Piktus, Fabio Petroni, Vladimir
+  Karpukhin, Naman Goyal, Heinrich K{\"u}ttler, Mike Lewis, Wen-tau Yih, Tim
+  Rockt{\"a}schel, et~al.
+\newblock Retrieval-augmented generation for knowledge-intensive {NLP} tasks.
+\newblock \emph{Advances in Neural Information Processing Systems},
+  33:\penalty0 9459--9474, 2020.
+
+\bibitem[{National Institute of Mental Health}(2024)]{nimh2024mental}
+{National Institute of Mental Health}.
+\newblock Mental health information.
+\newblock \url{https://www.nimh.nih.gov/health/topics}, 2024.
+\newblock Accessed: 2025.
+
+\bibitem[{Neo4j, Inc.}(2024)]{neo4j2024}
+{Neo4j, Inc.}
+\newblock The {Neo4j} graph data platform.
+\newblock \emph{White Paper}, 2024.
+
+\bibitem[Nogueira et~al.(2020)Nogueira, Jiang, and
+  Lin]{nogueira2020crossencoder}
+Rodrigo Nogueira, Zhiying Jiang, and Jimmy Lin.
+\newblock Document ranking with a pretrained sequence-to-sequence model.
+\newblock \emph{arXiv preprint arXiv:2003.06713}, 2020.
+
+\bibitem[Nori et~al.(2023)Nori, Lee, Zhang, Carignan, Edgar, Fusi, King,
+  Larson, Li, Liu, et~al.]{nori2023medllm}
+Harsha Nori, Yin~Tat Lee, Sheng Zhang, Dean Carignan, Richard Edgar, Nicolo
+  Fusi, Nicholas King, Jonathan Larson, Yuanzhi Li, Weishung Liu, et~al.
+\newblock Can generalist foundation models outcompete special-purpose tuning?
+  case study in medicine.
+\newblock \emph{arXiv preprint arXiv:2311.16452}, 2023.
+
+\bibitem[Pan et~al.(2024)Pan, Luo, Wang, Chen, Wang, and Wu]{pan2024kgrag}
+Shirui Pan, Linhao Luo, Yufei Wang, Chen Chen, Jiawei Wang, and Xindong Wu.
+\newblock Unifying large language models and knowledge graphs: A roadmap.
+\newblock \emph{IEEE Transactions on Knowledge and Data Engineering},
+  36\penalty0 (7):\penalty0 3580--3599, 2024.
+
+\bibitem[Reimers and Gurevych(2019)]{reimers2019sentbert}
+Nils Reimers and Iryna Gurevych.
+\newblock Sentence-{BERT}: Sentence embeddings using {S}iamese {BERT}-networks.
+\newblock In \emph{Proceedings of the 2019 Conference on Empirical Methods in
+  Natural Language Processing}, pages 3982--3992, 2019.
+
+\bibitem[Singhal et~al.(2023)Singhal, Azizi, Tu, Mahdavi, Wei, Chung, Scales,
+  Tanwani, Cole-Lewis, Pfohl, et~al.]{singhal2023medpalm}
+Karan Singhal, Shekoofeh Azizi, Tao Tu, S~Sara Mahdavi, Jason Wei, Hyung~Won
+  Chung, Nathan Scales, Ajay Tanwani, Heather Cole-Lewis, Stephen Pfohl, et~al.
+\newblock Large language models encode clinical knowledge.
+\newblock \emph{Nature}, 620\penalty0 (7972):\penalty0 172--180, 2023.
+
+\bibitem[Traag et~al.(2019)Traag, Waltman, and van Eck]{traag2019leiden}
+V.~A. Traag, L.~Waltman, and N.~J. van Eck.
+\newblock From {Louvain} to {Leiden}: Guaranteeing well-connected communities.
+\newblock \emph{Scientific Reports}, 9\penalty0 (1):\penalty0 5233, 2019.
+
+\bibitem[{World Health Organization}(2024)]{who2024mental}
+{World Health Organization}.
+\newblock Mental health.
+\newblock \url{https://www.who.int/health-topics/mental-health}, 2024.
+\newblock Accessed: 2025.
+
+\end{thebibliography}

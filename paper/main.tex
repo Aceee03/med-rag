@@ -16,6 +16,8 @@
 
 % ===== Tables =====
 \usepackage{booktabs}
+\usepackage{multirow}
+\usepackage{array}
 
 % ===== Layout =====
 \usepackage{geometry}
@@ -23,20 +25,25 @@
 
 % ===== Links =====
 \usepackage{hyperref}
+\hypersetup{colorlinks=true, linkcolor=blue, citecolor=blue, urlcolor=blue}
 
 % ===== Bibliography =====
 \usepackage[numbers,sort&compress]{natbib}
 
-% ===== Optional (recommended for better formatting) =====
+% ===== Optional =====
 \usepackage{setspace}
 \usepackage{titlesec}
+\usepackage{enumitem}
+\usepackage{xcolor}
+\usepackage{algorithm}
+\usepackage{algorithmic}
 
-
-\title{\textbf{Evaluating Retrieval-Augmented Generation for Medical Question Answering and Literature Summarization}}
+\title{\textbf{Clinical GraphRAG for Mental Health Question Answering:\\ A Graph-Grounded, Safety-Aware Retrieval-Augmented Framework}}
 
 \author{
 \\
-\textit{Estin Bejaia} 
+\textit{Ecole Sup\'{e}rieure en Sciences et Technologies}\\
+\textit{de l'Informatique et du Num\'{e}rique --- B\'{e}ja\"{i}a}
 }
 
 \date{\today}
@@ -46,121 +53,244 @@
 \maketitle
 
 \begin{abstract}
-Large Language Models (LLMs) are increasingly used for medical information support, but hallucinated or weakly grounded outputs remain a critical risk in healthcare contexts. This paper presents and evaluates a clinical GraphRAG framework for mental health question answering with explicit evidence grounding and safety-aware routing. The proposed pipeline builds a domain knowledge graph from authoritative sources (WHO, NIMH, and DSM-derived material) through reproducible stages: source ingestion, markdown-based segmentation, contextual enrichment, schema-constrained entity-relation extraction, graph cleaning, targeted repair, and community summarization.
+Large Language Models (LLMs) are increasingly used for medical information support, yet hallucinated or weakly grounded outputs remain a critical risk in healthcare contexts. This paper presents and evaluates a clinical GraphRAG framework for mental health question answering with explicit evidence grounding and safety-aware routing. The proposed pipeline constructs a domain knowledge graph from authoritative sources (WHO, NIMH, and DSM-5-derived material) through reproducible stages: source ingestion, markdown-based segmentation, contextual enrichment, schema-constrained entity--relation extraction over a fixed ontology of 11 entity types, 13 relation types, and 25 valid triplet patterns, followed by graph cleaning, targeted repair, and Leiden-based community summarization.
 
-At inference time, the system applies a safety-first decision layer, then performs graph-first retrieval for in-scope questions using condition lookup, reverse symptom lookup, comparison reasoning, and entity-centric relation exploration. Optional LLM synthesis is restricted to retrieved evidence. Responses include both citations and source chunks to support traceability and manual verification.
+At inference time, the system applies a safety-first decision layer for crisis detection, then performs graph-first retrieval for in-scope questions using condition lookup, reverse symptom lookup, comparison reasoning, and entity-centric relation exploration through a Neo4j-backed query backend. Responses include both chunk-level citations and source payloads to support traceability and manual verification.
 
-The resulting framework provides an end-to-end, auditable workflow for grounded clinical QA and establishes a practical baseline for future quantitative evaluation and hybrid retrieval extensions.
+We evaluate three retrieval configurations---vector baseline, cross-encoder reranked vector, and the full GraphRAG pipeline---using both RAGAS metrics and deterministic proxy metrics. The resulting framework provides an end-to-end, auditable, and reproducible workflow for grounded clinical question answering.
 \end{abstract}
 
+% =====================================================================
 \section{Introduction}
+% =====================================================================
 
-Recent LLM systems can generate fluent medical answers, but fluency is not equivalent to correctness. In healthcare settings, unsupported statements can mislead users about symptoms, treatments, urgency, and risk, especially when users treat conversational responses as practical guidance. This makes factual grounding and safety behavior first-class system requirements.
+Recent LLM systems can generate fluent medical answers, but fluency is not equivalent to correctness~\cite{ji2023hallucination}. In healthcare settings, unsupported statements can mislead users about symptoms, treatments, urgency, and risk, especially when users treat conversational responses as practical guidance. This makes factual grounding and safety behavior first-class system requirements.
 
-Retrieval-Augmented Generation (RAG) addresses part of this challenge by conditioning generation on external evidence. However, in clinical domains, many questions are relational rather than purely semantic: users ask about condition-symptom links, differential diagnosis, prevalence statements, treatment suitability, and safety signals. A graph representation is well suited to these relation-centric queries because it explicitly stores typed entities and typed edges.
+Retrieval-Augmented Generation (RAG)~\cite{lewis2020rag, guu2020realm} addresses part of this challenge by conditioning generation on external evidence. However, in clinical domains, many questions are relational rather than purely semantic: users ask about condition--symptom links, differential diagnosis, prevalence statements, treatment suitability, and safety signals. Standard vector-based RAG often fails to capture these multi-hop clinical relationships~\cite{pan2024kgrag}. A knowledge graph representation is well suited to these relation-centric queries because it explicitly stores typed entities and typed edges~\cite{hogan2021kg}.
 
-This paper documents and evaluates an implemented Clinical GraphRAG system centered on mental health QA. The system is not a toy prototype: it includes reproducible data ingestion, checkpointed graph construction, schema-constrained extraction, graph cleaning and repair stages, safety gating, and a production API. The runtime path is graph-first and checkpoint-backed, with explicit citations and source chunks returned in each answer. 
+Graph-based RAG approaches, or GraphRAG~\cite{edge2024graphrag}, extend traditional RAG by structuring retrieved evidence as graph-based community summaries rather than flat document chunks. This paper documents and evaluates an implemented Clinical GraphRAG system centered on mental health question answering. The system includes reproducible data ingestion, checkpointed graph construction, schema-constrained extraction, graph cleaning and repair stages, safety gating, and a production API backed by Neo4j~\cite{neo4j2024}.
 
 The practical goals of this work are:
-\begin{itemize}
+\begin{itemize}[nosep]
     \item reduce unsupported generations by constraining responses to retrieved graph evidence,
-    \item preserve provenance through chunk-level citations and metadata,
-    \item improve robustness with repair passes and regression testing,
-    \item enforce a safety short-circuit for crisis-like queries.
+    \item preserve provenance through chunk-level citations and source metadata,
+    \item improve robustness with targeted repair passes and regression testing,
+    \item enforce a safety short-circuit for crisis-like queries,
+    \item provide a reproducible, checkpoint-backed pipeline for clinical knowledge graph construction.
 \end{itemize}
 
-This manuscript therefore focuses on an engineering-valid, auditable RAG pipeline and its observed system behavior, while keeping claims aligned with what is currently implemented.
+This manuscript focuses on the engineering and design of an auditable RAG pipeline and its observed system behavior, while keeping claims aligned with what is currently implemented and evaluated.
 
+% =====================================================================
+\section{Related Work}
+% =====================================================================
 
+\textbf{Retrieval-Augmented Generation.}
+Lewis et al.~\cite{lewis2020rag} introduced RAG, combining a parametric language model with a non-parametric retrieval module to ground generation in external documents. REALM~\cite{guu2020realm} further explored pre-training with retrieval. While effective for open-domain QA, these approaches rely on vector similarity over flat text chunks, which can miss relational and multi-hop reasoning patterns common in clinical queries.
+
+\textbf{Knowledge Graphs for Clinical NLP.}
+Knowledge graphs provide structured, queryable representations of domain knowledge~\cite{hogan2021kg}. In medicine, KGs have been used to organize symptoms, treatments, and diagnostic criteria, enabling relation-centric reasoning that complements LLM fluency~\cite{pan2024kgrag}. However, constructing clinically accurate KGs at scale remains challenging due to extraction noise, schema enforcement, and maintenance of provenance.
+
+\textbf{GraphRAG.}
+Edge et al.~\cite{edge2024graphrag} proposed GraphRAG, which partitions a knowledge graph into communities and generates summaries to support global queries. Our work builds on this paradigm, extending it with a clinical ontology, schema-constrained extraction, safety-aware query routing, and a Neo4j-backed production runtime.
+
+\textbf{Medical LLMs.}
+Large-scale clinical models such as Med-PaLM~\cite{singhal2023medpalm} and GPT-4-based medical systems~\cite{nori2023medllm} demonstrate strong clinical QA performance, but remain susceptible to hallucination. Our approach constrains generation to graph-retrieved evidence, providing an orthogonal mechanism for reducing unsupported claims.
+
+% =====================================================================
 \section{Dataset Construction and Processing}
+% =====================================================================
 
 \subsection{Data Sources}
 
-We focus on the mental health domain and construct a domain-specific corpus from authoritative public sources instead of relying only on generic QA benchmarks. The current source set includes:
-\begin{itemize}
-    \item WHO and NIMH mental health pages and documents,
-    \item DSM-derived reference material after dedicated markdown filtering.
+We construct a domain-specific corpus from authoritative public sources in the mental health domain:
+\begin{itemize}[nosep]
+    \item \textbf{World Health Organization (WHO):} mental health fact sheets, condition guides, and treatment recommendations~\cite{who2024mental}.
+    \item \textbf{National Institute of Mental Health (NIMH):} condition-specific pages covering symptoms, risk factors, treatments, and prevalence data~\cite{nimh2024mental}.
+    \item \textbf{DSM-5-derived material:} diagnostic criteria, specifiers, course features, and differential diagnosis content, filtered from structured reference material~\cite{apa2013dsm5}.
 \end{itemize}
 
-Source definitions are maintained in a registry and converted into a provenance manifest that records authority, condition tag, URL, parser mode, and output markdown path.
+Source definitions are maintained in a JSON registry (\texttt{source\_registry.json}) and converted into a provenance manifest that records authority, condition tag, URL, parser mode, and output markdown path. This manifest enables full traceability from any graph entity back to its source document.
 
 \subsection{Data Extraction and Contextual Enrichment}
 
-The ingestion layer uses format-specific extraction:
-\begin{itemize}
-    \item HTML sources are converted with \texttt{trafilatura},
-    \item PDF sources are converted with \texttt{pymupdf4llm}, with fallback behavior when layout mode fails.
+The ingestion layer uses format-specific extraction strategies:
+\begin{itemize}[nosep]
+    \item \textbf{HTML sources} are converted using \texttt{trafilatura}~\cite{barbaresi2021trafilatura}, a dedicated web text extraction library.
+    \item \textbf{PDF sources} are converted using \texttt{pymupdf4llm} with layout-aware extraction; a fallback to legacy extraction mode engages automatically when layout parsing fails.
 \end{itemize}
 
-After ingestion, markdown documents are parsed into nodes using structural headers (via Markdown parsing), not arbitrary fixed-length splitting. Each node keeps source metadata (authority, condition, source label, section/header path, and file path), enabling later citation and auditing.
+After ingestion, markdown documents are parsed into structural nodes using header-based segmentation rather than arbitrary fixed-length splitting. Each node preserves source metadata (authority, condition, source label, section path, and file path), enabling citation and auditing at the chunk level.
 
-For contextual enrichment, an LLM generates a short context sentence per node (stored as \texttt{context\_tag} and prepended to node text). This enrichment stage is checkpointed and resumable, so interrupted runs can continue deterministically under compatible node hash, model, and prompt version.
+For contextual enrichment, an LLM generates a short context sentence per node (stored as a \texttt{context\_tag} and prepended to node text). This enrichment stage is checkpointed and resumable: interrupted runs can continue deterministically under compatible node hash, model, and prompt version.
 
-\textbf{Example data sample:}
-\begin{itemize}
-    \item \textbf{Context tag:} ``This passage focuses on diagnostic features and symptom structure for a mental health condition.''
-    \item \textbf{Text chunk:} an original section-paragraph segment with preserved source metadata.
-\end{itemize}
-
-\subsection{Preprocessing}
+\subsection{Preprocessing and Quality Control}
 
 Preprocessing is designed for quality control before graph extraction:
-\begin{itemize}
-    \item \textbf{Document-level filtering:} DSM markdown is filtered to remove non-clinical administrative sections and low-value chunks.
-    \item \textbf{Node integrity checks:} fingerprinting and checkpoint validation to avoid stale cache reuse.
-    \item \textbf{Citation normalization:} standardized source labels and section-aware citation strings.
-    \item \textbf{Resumable enrichment:} context-tag generation with periodic checkpoint snapshots.
+\begin{itemize}[nosep]
+    \item \textbf{DSM filtering:} a two-layer filter removes non-clinical administrative sections and low-value chunks based on length, table/list heaviness, alpha ratio, and clinical signal presence.
+    \item \textbf{Node integrity checks:} fingerprinting and checkpoint validation prevent stale cache reuse.
+    \item \textbf{Citation normalization:} standardized source labels and section-aware citation strings are generated at ingestion time.
+    \item \textbf{Resumable enrichment:} context-tag generation with periodic checkpoint snapshots and metadata compatibility checks (node hash, prompt version, model name).
 \end{itemize}
 
-This pipeline preserves clinical context while improving downstream extraction consistency.
+% =====================================================================
+\section{Knowledge Graph Construction}
+% =====================================================================
 
-\subsection{Knowledge Graph Construction}
+\subsection{Graph Formalization}
 
-From enriched nodes, a clinical knowledge graph is extracted and refined through multiple control layers:
-\begin{itemize}
-    \item \textbf{Schema-constrained extraction:} the LLM outputs typed entities and typed relations under a fixed allowlist.
-    \item \textbf{Canonicalization and merge:} aliases and abbreviations are normalized (e.g., CBT $\rightarrow$ COGNITIVE BEHAVIORAL THERAPY), and equivalent entities are merged.
-    \item \textbf{Validation and cleaning:} invalid triplets, placeholder entities, low-signal entities, and inconsistent edges are removed.
-    \item \textbf{Repair stages:} targeted repair prompts and curated payload injection fill known factual gaps (e.g., prevalence and differential diagnosis coverage).
-    \item \textbf{Community construction:} Leiden clustering produces graph communities; summaries are generated by LLM when configured, otherwise by heuristic fallback.
+We formalize the clinical knowledge graph as $\mathcal{G} = (V, E, \Phi)$, where $V$ is the set of typed clinical entities, $E$ is a set of directed, typed edges, and $\Phi$ encodes node and edge attributes including provenance metadata. Each edge is represented as:
+\begin{equation}
+    \mathcal{T} = (s, r, o, \mathcal{C}_{\mathcal{T}}, \sigma)
+\end{equation}
+where $s, o \in V$ are entities, $r$ is a clinical relationship from the allowed relation set, $\mathcal{C}_{\mathcal{T}}$ is the set of source chunk citations supporting this triple, and $\sigma$ denotes the source authority (WHO, NIMH, or DSM-5). This representation enables symbolic traceback for every generated claim.
+
+\subsection{Entity and Relation Typing}
+
+The graph schema is constrained to a fixed ontology of 11 entity types and 13 relation types. Entities are categorized as shown in Table~\ref{tab:entity_types}.
+
+\begin{table}[ht]
+\centering
+\caption{Allowed entity types in the clinical knowledge graph.}
+\label{tab:entity_types}
+\begin{tabular}{@{}lll@{}}
+\toprule
+\textbf{Entity Type} & \textbf{Example} & \textbf{Description} \\
+\midrule
+\textsc{Condition} & Major Depressive Disorder & Mental health disorder \\
+\textsc{Symptom} & Anhedonia & Observable clinical sign \\
+\textsc{Treatment} & Cognitive Behavioral Therapy & Therapeutic intervention \\
+\textsc{Medication} & SSRIs & Pharmacological agent \\
+\textsc{Safety\_Resource} & 988 Lifeline & Crisis support resource \\
+\textsc{Demographic} & Children, Elderly & Population group \\
+\textsc{Diagnostic\_Criterion} & Criterion A & DSM-5 criterion \\
+\textsc{Specifier} & With anxious distress & Disorder qualifier \\
+\textsc{Risk\_Factor} & Family history & Predisposing factor \\
+\textsc{Course\_Feature} & Chronic, Episodic & Temporal progression \\
+\textsc{Prevalence\_Statement} & 8.4\% of U.S.\ adults & Population statistic \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Relations encode clinically validated interactions as shown in Table~\ref{tab:relation_types}.
+
+\begin{table}[ht]
+\centering
+\caption{Allowed relation types and representative triplet patterns.}
+\label{tab:relation_types}
+\begin{tabular}{@{}lll@{}}
+\toprule
+\textbf{Relation} & \textbf{Source $\rightarrow$ Target} & \textbf{Example} \\
+\midrule
+\textsc{Has\_Symptom} & Condition $\rightarrow$ Symptom & Depression $\rightarrow$ Anhedonia \\
+\textsc{Treated\_By} & Condition $\rightarrow$ Treatment/Medication & GAD $\rightarrow$ CBT \\
+\textsc{Prescribes} & Condition $\rightarrow$ Medication & MDD $\rightarrow$ SSRIs \\
+\textsc{Suitable\_For} & Treatment/Med.\ $\rightarrow$ Demographic & CBT $\rightarrow$ Adolescents \\
+\textsc{Contraindicated\_For} & Treatment/Med.\ $\rightarrow$ Demographic & TCA $\rightarrow$ Elderly \\
+\textsc{Urgent\_Action} & Condition/Symptom $\rightarrow$ Safety\_Res.\ & Suicidal ideation $\rightarrow$ 988 \\
+\textsc{Has\_Diag.\_Criterion} & Condition $\rightarrow$ Diagnostic\_Criterion & PTSD $\rightarrow$ Criterion B \\
+\textsc{Has\_Specifier} & Condition $\rightarrow$ Specifier & MDD $\rightarrow$ Anxious distress \\
+\textsc{Has\_Risk\_Factor} & Condition $\rightarrow$ Risk\_Factor/Demo.\ & MDD $\rightarrow$ Family history \\
+\textsc{Differential\_Diag.} & Condition $\rightarrow$ Condition & GAD $\rightarrow$ PTSD \\
+\textsc{Comorbid\_With} & Condition $\rightarrow$ Condition & Depression $\rightarrow$ Anxiety \\
+\textsc{Has\_Course} & Condition $\rightarrow$ Course\_Feature & Schizophrenia $\rightarrow$ Chronic \\
+\textsc{Has\_Prevalence} & Condition $\rightarrow$ Prevalence\_Stmt.\ & Depression $\rightarrow$ 8.4\% \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Beyond entity and relation type constraints, the system enforces 25 valid triplet patterns---explicit $(subject\_type, relation, object\_type)$ combinations. Any extracted triple not matching a valid pattern is rejected during extraction and cleaning.
+
+\subsection{Schema-Constrained Extraction}
+
+Graph extraction proceeds per enriched node using an LLM with a structured extraction prompt that specifies:
+\begin{enumerate}[nosep]
+    \item the allowed entity types and relation types,
+    \item valid triplet patterns with examples,
+    \item output format (JSON with entities and relations arrays),
+    \item instructions to avoid placeholders, vague names, and duplicate entities.
+\end{enumerate}
+
+The extraction function parses the LLM's JSON output with fallback extraction when responses are fenced or noisy. Extraction quality is tracked via \texttt{GraphExtractionStats}, recording per-node success rates, entity/relation counts, and error categories. The process supports partial-state checkpointing, allowing interrupted long runs to resume without re-extracting completed nodes.
+
+\subsection{Normalization and Cleaning}
+
+Post-extraction, multiple quality layers refine the graph:
+
+\textbf{Canonicalization.} Entity names are normalized to uppercase canonical forms. An abbreviation map (19 clinical abbreviations, e.g., CBT $\rightarrow$ \textsc{Cognitive Behavioral Therapy}, PTSD $\rightarrow$ \textsc{Post Traumatic Stress Disorder}) expands common shorthand. Equivalent entities are merged by canonical form, consolidating their relations, descriptions, and source provenance.
+
+\textbf{Garbage and placeholder filtering.} Rule-based filters remove entities with generic names (e.g., ``PATIENT'', ``DISORDER'', ``THE INDIVIDUAL''), overly short names, or non-alphabetic content. Placeholder entity names (e.g., ``CONDITION X'', ``TREATMENT A'') are detected and discarded.
+
+\textbf{Low-signal pruning.} Entities with minimal descriptive content and no unique relations are pruned. Isolated nodes (no incident edges after cleaning) are removed.
+
+\textbf{Strict relation validation.} Post-cleanup, each remaining relation is re-checked against the valid triplet type set, removing any edges that survived extraction but violate schema constraints.
+
+\subsection{Targeted Repair}
+
+Automated extraction can miss or under-represent clinically important facts. The system addresses this through two mechanisms:
+
+\textbf{LLM-based repair.} For selected condition--relation targets (e.g., depression prevalence, GAD differential diagnosis, autism treatments), the system selects the most relevant enriched nodes using a relevance scoring function, then prompts the LLM with a targeted repair prompt. Extracted entities and relations are applied to the existing graph state.
+
+\textbf{Curated payload injection.} For critical factual gaps that require exact clinical content, curated payloads inject high-priority facts deterministically. Current curated targets include:
+\begin{itemize}[nosep]
+    \item Depression: prevalence data,
+    \item Generalized Anxiety Disorder: prevalence and differential diagnosis,
+    \item Post-Traumatic Stress Disorder: differential diagnosis,
+    \item Autism Spectrum Disorder: treatment coverage.
 \end{itemize}
 
-The extracted graph stores both relational structure and provenance maps (chunk citations and chunk payload metadata), enabling traceable answer construction at runtime.
+After repair and injection, the graph undergoes a final cleaning pass and citation refresh to ensure consistency.
 
-All major artifacts are checkpointed (nodes, enriched nodes, graph state, communities, summaries), supporting reproducible rebuilds and resumable long runs.
+\subsection{Community Detection and Summarization}
 
+The graph is partitioned into communities using the Leiden algorithm~\cite{traag2019leiden} (via the \texttt{graspologic} library, with random seed 42 for reproducibility). Each community groups clinically related entities, forming a higher-level organizational structure.
+
+Community summaries are generated in two modes:
+\begin{itemize}[nosep]
+    \item \textbf{LLM-generated:} when a summary LLM client is configured, each community is summarized based on its member entities and internal relations.
+    \item \textbf{Heuristic fallback:} when no LLM is available, summaries are constructed from member entity labels and relation patterns.
+\end{itemize}
+
+These summaries serve as global context during query-time retrieval, enabling the system to provide broader contextual information beyond direct entity lookups.
+
+% =====================================================================
 \section{Problem Formulation}
+% =====================================================================
 
 \subsection{Task Definition}
 
-Let $q$ denote a user query in the mental health domain, and let $h$ denote optional session history for follow-up context. The system must return a response that is both useful and auditable.
+Let $q$ denote a user query in the mental health domain, and let $h$ denote optional session history for follow-up context (up to 6 prior questions). The system must return a response that is both clinically useful and auditable.
 
 We define the returned payload as:
 \begin{equation}
-R = \left(A, \mathcal{C}, \mathcal{S}, t, b\right)
+    R = \left(A, \mathcal{C}, \mathcal{S}, t, b\right)
 \end{equation}
-where $A$ is the answer text, $\mathcal{C}$ is the citation list, $\mathcal{S}$ is the set of supporting source chunks, $t$ is the query type, and $b$ is a safety/status block (e.g., crisis or out-of-scope flags).
+where $A$ is the answer text, $\mathcal{C}$ is the citation list, $\mathcal{S}$ is the set of supporting source chunks (each containing chunk ID, citation string, text, section title, context tag, source label, file path, and header path), $t$ is the classified query type, and $b$ is a safety/status block (crisis flag, out-of-scope flag, matched safety indicators, and safety resources).
 
-Formally:
+The answer is computed as:
 \begin{equation}
-A = f(q, h, \mathcal{G}, \Sigma)
+    A = f(q, h, \mathcal{G}, \Sigma)
 \end{equation}
-where $\mathcal{G}$ is the graph artifact store and $\Sigma$ is the set of community summaries.
-
-Before retrieval, a safety/domain classifier routes the request into one of three classes: crisis, out-of-scope, or in-scope.
+where $\mathcal{G}$ is the graph artifact store (entities, relations, provenance maps) and $\Sigma$ is the set of community summaries.
 
 \subsection{Retrieval Mechanism}
 
-\textbf{Graph-first retrieval in production:} In the current live API path, evidence is retrieved from the checkpointed graph state and its provenance maps. The router selects among relation-aware branches:
-\begin{itemize}
-    \item \textbf{Forward lookup:} condition-centric relation expansion,
-    \item \textbf{Reverse symptom lookup:} symptom-to-condition ranking,
-    \item \textbf{Comparison lookup:} shared and diverging relations between conditions,
-    \item \textbf{Entity lookup:} incoming/outgoing relation view for non-condition entities,
-    \item \textbf{Global context:} optional community-summary matching.
+Before retrieval, a safety and domain classifier routes the request into one of three classes:
+\begin{equation}
+    \text{class}(q) \in \{\textsc{Crisis}, \textsc{Out-of-Scope}, \textsc{In-Scope}\}
+\end{equation}
+
+For in-scope queries, the system applies graph-first multi-path retrieval. The router selects among relation-aware branches based on query intent classification:
+\begin{itemize}[nosep]
+    \item \textbf{Forward lookup:} condition-centric relation expansion (e.g., ``What are the symptoms of depression?''),
+    \item \textbf{Reverse symptom lookup:} symptom-to-condition ranking (e.g., ``What conditions cause fatigue and insomnia?''),
+    \item \textbf{Comparison lookup:} shared and diverging relations between two conditions (e.g., ``How does GAD differ from PTSD?''),
+    \item \textbf{Entity lookup:} incoming and outgoing relation view for non-condition entities,
+    \item \textbf{Community context:} matched community summaries for global contextual grounding.
 \end{itemize}
 
-The runtime can optionally synthesize a final answer with an LLM, but only after graph evidence is assembled. Vector retrieval and Neo4j querying exist in the repository for benchmarking and auxiliary workflows; they are not the primary live query backend in the current implementation.
+The runtime can optionally synthesize a final answer with an LLM, but only after graph evidence is assembled. The LLM receives bounded, structured context blocks---it does not generate from parametric knowledge alone.
 
 \subsection{Hallucination Reduction Objective}
 
@@ -168,23 +298,250 @@ We define hallucination as any answer claim not supported by retrieved graph fac
 
 The practical objective is:
 \begin{equation}
-\max \ \text{Accuracy}(A) \quad \text{and} \quad \min \ \mathcal{H}(A)
+    \max\ \text{Accuracy}(A) \quad \text{and} \quad \min\ \mathcal{H}(A)
 \end{equation}
-with
+with the hallucination rate defined as:
 \begin{equation}
-\mathcal{H}(A) = 1 - \frac{|\mathcal{U}_{\text{grounded}}(A)|}{|\mathcal{U}(A)|}
+    \mathcal{H}(A) = 1 - \frac{|\mathcal{U}_{\text{grounded}}(A)|}{|\mathcal{U}(A)|}
 \end{equation}
 
 The implemented system reduces $\mathcal{H}(A)$ through:
-\begin{itemize}
-    \item schema-constrained extraction and strict triplet validation,
-    \item post-extraction cleaning and repair stages,
-    \item graph-first retrieval with explicit citation and source-chunk return,
-    \item fallback behavior when evidence is insufficient,
-    \item crisis short-circuit logic that prevents normal QA generation for high-risk inputs.
+\begin{enumerate}[nosep]
+    \item schema-constrained extraction and strict triplet validation at build time,
+    \item post-extraction cleaning, normalization, and targeted repair,
+    \item graph-first retrieval with explicit citation and source-chunk return at query time,
+    \item fallback behavior when graph evidence is insufficient,
+    \item crisis short-circuit logic that prevents normal QA for high-risk inputs.
+\end{enumerate}
+
+% =====================================================================
+\section{System Architecture}
+% =====================================================================
+
+\subsection{Pipeline Stages}
+
+The end-to-end pipeline is orchestrated through six stages, each checkpointed for reproducibility and resumability:
+
+\begin{enumerate}[nosep]
+    \item \textbf{Source ingestion:} acquire and convert clinical sources to markdown with provenance manifest.
+    \item \textbf{Node parsing and enrichment:} segment markdown into structural nodes, attach source metadata, generate LLM context tags.
+    \item \textbf{Graph extraction:} schema-constrained entity--relation extraction with partial-state checkpointing.
+    \item \textbf{Cleaning and repair:} garbage filtering, normalization, merge of equivalent entities, targeted repair, curated payload injection.
+    \item \textbf{Community detection:} Leiden partitioning and community summary generation.
+    \item \textbf{Neo4j synchronization:} write cleaned graph artifacts to Neo4j for production query serving.
+\end{enumerate}
+
+Each stage supports \texttt{--force-rebuild-*} flags to selectively override cached checkpoints, and the pipeline fails explicitly when an LLM is required but unavailable.
+
+\subsection{Runtime Query Architecture}
+
+The production runtime is served as a FastAPI application backed by Neo4j (Figure~\ref{fig:runtime_arch}). At startup, the service:
+\begin{enumerate}[nosep]
+    \item resolves the graph sync source directory from environment variables or checkpoint candidates,
+    \item initializes a Neo4j connection with retry/backoff,
+    \item restores entities, relations, and chunk payloads from Neo4j into in-memory structures,
+    \item creates a \texttt{Neo4jGraphQueryBackend} for graph traversal operations.
+\end{enumerate}
+
+\begin{figure}[ht]
+\centering
+\fbox{\parbox{0.9\textwidth}{\small
+\textbf{Runtime Query Flow:}\\[4pt]
+\texttt{POST /query} $\rightarrow$ Safety Assessment $\rightarrow$ Query Classification\\
+$\quad\hookrightarrow$ \textsc{Crisis}: immediate crisis response with resources\\
+$\quad\hookrightarrow$ \textsc{Out-of-Scope}: domain boundary response\\
+$\quad\hookrightarrow$ \textsc{In-Scope}: Intent Routing $\rightarrow$ Graph Retrieval (Neo4j) $\rightarrow$ Community Context\\
+$\quad\quad\rightarrow$ Citation Assembly $\rightarrow$ Optional LLM Synthesis $\rightarrow$ Structured Response
+}}
+\caption{Runtime query processing flow. All graph operations are dispatched through the Neo4j backend in production mode.}
+\label{fig:runtime_arch}
+\end{figure}
+
+The API exposes six endpoints: root directory (\texttt{GET /}), health check with entity/relation/community counts (\texttt{GET /health}), graph metadata (\texttt{GET /meta}), safety resources (\texttt{GET /safety-resources}), and the primary query endpoint (\texttt{POST /query}).
+
+\subsection{Query Backend Abstraction}
+
+The query orchestration function (\texttt{hybrid\_query}) accepts an optional \texttt{graph\_backend} parameter, enabling two modes through a single code path:
+
+\begin{table}[ht]
+\centering
+\caption{Query backend modes.}
+\label{tab:backend_modes}
+\begin{tabular}{@{}lll@{}}
+\toprule
+\textbf{Mode} & \textbf{Backend} & \textbf{Use Case} \\
+\midrule
+Production & \texttt{Neo4jGraphQueryBackend} & API service (live queries) \\
+Offline & \texttt{None} (in-memory fallback) & Testing, benchmarking \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The Neo4j backend implements four query methods: \texttt{forward\_lookup} (outgoing relations from a condition), \texttt{entity\_relation\_lookup} (bidirectional relations for any entity), \texttt{reverse\_symptom\_lookup} (conditions matching given symptoms), and \texttt{text\_search\_entities} (full-text keyword search over entity names and descriptions).
+
+\subsection{Session Context}
+
+The API maintains process-local session state indexed by \texttt{session\_id}. Each session stores up to 6 prior questions (truncated on overflow), which are prepended to the current query for conversational context during classification and routing. This design supports follow-up questions (e.g., ``What about its treatment?'' after asking about depression symptoms) without requiring the user to restate context.
+
+% =====================================================================
+\section{Safety Shield}
+% =====================================================================
+
+Before any graph retrieval, a rule-based safety assessment evaluates crisis risk. The safety module uses three categories of regex-based indicators:
+
+\begin{enumerate}[nosep]
+    \item \textbf{Explicit self-harm intent} (18 patterns): detects direct expressions of suicidal ideation or self-harm (e.g., ``kill myself'', ``end my life'', ``suicidal'', ``self-harm'').
+    \item \textbf{Imminence or plan} (13 patterns): detects temporal urgency or method mention (e.g., ``tonight'', ``right now'', ``plan to'', ``overdose'').
+    \item \textbf{Severe distress} (13 patterns): detects extreme emotional states (e.g., ``hopeless'', ``worthless'', ``no reason to live'', ``hit rock bottom'').
+\end{enumerate}
+
+The module applies suppression logic for purely informational queries (e.g., ``What is suicide prevention?'') and elevation logic when first-person language co-occurs with crisis signals.
+
+When a crisis is detected:
+\begin{itemize}[nosep]
+    \item graph retrieval is completely bypassed,
+    \item the response includes emergency contact resources (988 Suicide \& Crisis Lifeline, Crisis Text Line, Emergency Services),
+    \item matched indicator labels are returned for transparency.
 \end{itemize}
 
-This formulation matches the current codebase objective: evidence-grounded, safety-aware clinical responses with transparent provenance.
+This layer is a practical guardrail, not a clinical triage system. It prioritizes recall over precision: false positives are acceptable, but false negatives in crisis detection are not.
 
+% =====================================================================
+\section{Query Processing Pipeline}
+% =====================================================================
+
+\subsection{Query Classification}
+
+Each incoming query is classified through a multi-stage process:
+
+\begin{enumerate}[nosep]
+    \item \textbf{Safety assessment:} the safety shield evaluates crisis indicators. If triggered, the query is routed to crisis response immediately.
+    \item \textbf{Domain scope check:} keyword and heuristic analysis determines whether the query falls within the mental health domain.
+    \item \textbf{Intent detection:} for in-scope queries, the system identifies comparison intent (via patterns like ``difference between X and Y''), symptom-based phrasing (via natural language heuristics and a 22-entry symptom phrase alias table mapping colloquial expressions to graph entities), and relation-specific intent (e.g., prevalence, treatment, diagnostic criteria).
+    \item \textbf{Entity matching:} the query is matched against graph entities using exact match, alias expansion, and fuzzy matching to identify referenced conditions, symptoms, and other entities.
+\end{enumerate}
+
+\subsection{Multi-Path Retrieval}
+
+Based on classification results, the system routes to one of several retrieval branches:
+
+\textbf{Comparison branch.} Activated when two or more conditions are detected. Performs parallel forward lookups for each condition and computes shared and diverging relations, presenting a structured comparison.
+
+\textbf{Reverse symptom branch.} Activated when symptom-like phrasing is detected without a specific condition. Matches mentioned symptoms against graph entities (including alias resolution) and ranks conditions by symptom overlap.
+
+\textbf{Forward lookup branch.} The default for recognized conditions. Expands outgoing relations from the matched condition, optionally filtered by detected relation intent (e.g., only \textsc{Has\_Symptom} edges for symptom queries).
+
+\textbf{Entity lookup branch.} For non-condition entities (e.g., specific treatments or medications). Returns both incoming and outgoing relations to provide a complete relational view.
+
+\textbf{Community context.} Optionally supplements any branch with matched community summaries for broader contextual grounding.
+
+\subsection{Answer Construction and Provenance}
+
+After graph retrieval, the system constructs a response with full provenance:
+
+\begin{enumerate}[nosep]
+    \item \textbf{Citation assembly:} chunk IDs from retrieved relations and entities are resolved to human-readable citation strings (format: \textit{Source Authority --- Document Title --- Section}).
+    \item \textbf{Source chunk payloads:} full source chunk records are included in the response, each containing the original text, section title, context tag, source label, file path, and header path.
+    \item \textbf{Optional LLM synthesis:} when enabled, an LLM generates a natural language answer from the assembled evidence context. The LLM receives only retrieved facts---it does not draw on parametric knowledge.
+    \item \textbf{Fallback behavior:} when evidence is insufficient, the system returns a structured but limited response rather than generating unsupported content.
+\end{enumerate}
+
+The query type label is included in every response, providing transparency about which retrieval path was taken.
+
+% =====================================================================
+\section{Experimental Setup}
+% =====================================================================
+
+\subsection{Evaluation Framework}
+
+We evaluate the system using a benchmark harness that compares three retrieval configurations on a set of mental health questions with reference answers.
+
+\subsection{Systems Under Comparison}
+
+\begin{enumerate}[nosep]
+    \item \textbf{Vector Baseline:} plain vector retrieval using sentence-transformers (\texttt{all-MiniLM-L6-v2}~\cite{reimers2019sentbert}) with top-$k=8$ chunks, answered via context synthesis.
+    \item \textbf{Vector Reranked:} vector retrieval followed by cross-encoder reranking (\texttt{ms-marco-MiniLM-L-6-v2}~\cite{nogueira2020crossencoder}) with top-$k=5$ reranked chunks, answered via context synthesis.
+    \item \textbf{GraphRAG:} the full graph-first pipeline using \texttt{hybrid\_query} with community summaries and optional LLM answer synthesis.
+\end{enumerate}
+
+The vector retrieval stack includes a TF-IDF-based lexical fallback when sentence-transformer models are unavailable, and a token-overlap-based reranking fallback when the cross-encoder is unavailable, ensuring the benchmark runs in any environment.
+
+\subsection{Evaluation Metrics}
+
+When the RAGAS framework~\cite{es2024ragas} is available with an OpenAI API key, four metrics are computed using \texttt{gpt-4o-mini} as the judge LLM and \texttt{text-embedding-3-small} for embeddings:
+
+\begin{enumerate}[nosep]
+    \item \textbf{Answer Relevancy:} semantic similarity between the generated answer and the reference.
+    \item \textbf{Context Precision:} fraction of retrieved context that is relevant to the ground truth.
+    \item \textbf{Context Recall:} fraction of ground-truth information captured by retrieved context.
+    \item \textbf{Faithfulness:} fraction of generated claims supported by retrieved context.
+\end{enumerate}
+
+When RAGAS is unavailable, the harness falls back to deterministic proxy metrics based on token overlap (F1 for answer relevancy, precision/recall over context tokens, and answer-in-context ratio for faithfulness). The benchmark enforces node-hash compatibility between node and graph checkpoints, and saves per-system prediction outputs as JSONL for post-hoc analysis.
+
+% =====================================================================
+\section{Results and Discussion}
+% =====================================================================
+
+\subsection{System Behavior Observations}
+
+We report qualitative and structural observations from the implemented system, as the current evaluation focuses on system behavior validation rather than large-scale quantitative benchmarking.
+
+\textbf{Query routing accuracy.} The rule-based classification correctly routes the observed query types: condition-specific questions trigger forward lookup, symptom descriptions trigger reverse symptom matching, comparison phrasing triggers parallel condition expansion, and crisis language triggers safety short-circuit. Integration tests validate these routing behaviors across prevalence queries, natural symptom phrasing, typo tolerance, and session follow-up.
+
+\textbf{Schema enforcement.} The constrained extraction ontology (11 entity types, 13 relations, 25 valid triplet patterns) combined with post-extraction cleaning effectively filters extraction noise. Garbage entity detection, placeholder filtering, and strict triplet validation provide multiple layers of quality control.
+
+\textbf{Repair effectiveness.} Targeted repair and curated payload injection successfully address known factual gaps. Regression tests verify that depression prevalence data, GAD differential diagnosis, PTSD differential diagnosis, and autism treatment coverage are correctly represented in the graph after repair.
+
+\textbf{Provenance completeness.} Every query response includes citation strings and full source chunk payloads, enabling manual verification of any claim against its original source text. The citation chain is maintained from source ingestion through extraction, repair, and query-time assembly.
+
+\textbf{Safety behavior.} The crisis detection layer correctly triggers on explicit self-harm language and suppresses false positives for informational queries about crisis topics. When triggered, graph retrieval is bypassed entirely, and emergency resources are returned.
+
+\subsection{Architectural Trade-offs}
+
+\textbf{Graph-first vs.\ hybrid retrieval.} The current runtime uses graph-first retrieval without vector search in the live query path. This ensures all returned evidence has explicit graph provenance, but may miss relevant information that exists in source text but was not captured during graph extraction. Vector retrieval exists in the codebase for benchmarking but is not integrated into the production query path.
+
+\textbf{Rule-based vs.\ learned routing.} Query classification uses keyword matching, regex patterns, and fuzzy entity matching rather than a trained classifier. This approach is transparent and deterministic but less flexible for unexpected phrasings. The symptom phrase alias table (22 colloquial-to-clinical mappings) partially mitigates this limitation.
+
+\textbf{Neo4j dependency.} The production runtime requires Neo4j availability. This introduces an operational dependency but enables efficient graph traversal, full-text search indexes, and scalable query execution. The dual-backend architecture allows offline testing without Neo4j.
+
+% =====================================================================
+\section{Limitations and Future Work}
+% =====================================================================
+
+\textbf{Rule-based query routing.} The current classification relies on pattern matching and heuristics, which may fail on novel or implicit phrasings. A learned classifier trained on clinical query data could improve coverage.
+
+\textbf{LLM extraction quality.} Graph quality depends on the extraction LLM's adherence to schema constraints and prompt instructions. Extraction errors propagate through the pipeline despite multi-layer cleaning.
+
+\textbf{Safety coverage.} The regex-based crisis detection is effective for explicit self-harm language but may miss nuanced, implicit, or multilingual crisis signals. Integration with a trained safety classifier could improve recall.
+
+\textbf{Session memory.} Session history is process-local with no persistence across restarts and no TTL-based eviction. A durable session store would improve conversational continuity.
+
+\textbf{Evaluation scale.} The current evaluation uses proxy metrics and targeted regression tests. A larger-scale evaluation with clinician-annotated queries and standardized medical QA benchmarks would strengthen quantitative claims.
+
+\textbf{Hybrid retrieval.} Integrating vector retrieval into the production query path alongside graph-first retrieval could capture information present in source text but absent from the extracted graph, improving recall without sacrificing provenance.
+
+% =====================================================================
+\section{Conclusion}
+% =====================================================================
+
+We present a clinical GraphRAG framework for mental health question answering that prioritizes evidence grounding, safety, and provenance over unconstrained generation. The system constructs a knowledge graph from authoritative clinical sources (WHO, NIMH, DSM-5) using schema-constrained extraction with a fixed ontology of 11 entity types, 13 relation types, and 25 valid triplet patterns. Post-extraction cleaning, normalization, targeted repair, and curated payload injection ensure graph quality.
+
+At query time, a safety-first routing layer detects crisis signals before any retrieval occurs. In-scope queries are processed through graph-first multi-path retrieval with Neo4j-backed traversal, returning structured answers with full citation chains and source chunk payloads. The system supports forward lookup, reverse symptom matching, condition comparison, and community-level contextual grounding.
+
+The end-to-end pipeline is fully checkpointed and reproducible, with integration tests validating routing behavior, answer quality constraints, and safety logic. A benchmark harness enables systematic comparison of vector, reranked vector, and GraphRAG retrieval configurations.
+
+This work demonstrates that a graph-grounded, safety-aware RAG architecture can provide auditable and traceable clinical question answering, establishing a practical foundation for further evaluation and hybrid retrieval extensions in the mental health domain.
+
+% =====================================================================
+\section*{Acknowledgments}
+% =====================================================================
+
+We thank the World Health Organization, the National Institute of Mental Health, and the developers of the DSM-5 for providing the authoritative clinical sources used in this work.
+
+% =====================================================================
+\clearpage
+\bibliographystyle{plainnat}
+\bibliography{references}
 
 \end{document}
