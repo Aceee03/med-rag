@@ -46,110 +46,145 @@
 \maketitle
 
 \begin{abstract}
-Large Language Models (LLMs) have demonstrated strong capabilities in natural language understanding and generation, leading to their increasing use in medical question answering and literature summarization. However, a critical limitation of these models is their tendency to generate hallucinated or unverified information, which can be particularly harmful in healthcare contexts. This issue is amplified by the growing reliance of individuals on LLMs for medical advice, sometimes as a substitute for professional consultation.
+Large Language Models (LLMs) are increasingly used for medical information support, but hallucinated or weakly grounded outputs remain a critical risk in healthcare contexts. This paper presents and evaluates a clinical GraphRAG framework for mental health question answering with explicit evidence grounding and safety-aware routing. The proposed pipeline builds a domain knowledge graph from authoritative sources (WHO, NIMH, and DSM-derived material) through reproducible stages: source ingestion, markdown-based segmentation, contextual enrichment, schema-constrained entity-relation extraction, graph cleaning, targeted repair, and community summarization.
 
-In this work, we investigate the effectiveness of Retrieval-Augmented Generation (RAG) techniques in reducing hallucinations and improving factual correctness in medical applications. We propose a Graph-based RAG approach that leverages structured relationships and optimized querying to provide reliable contextual information to the LLM. This enables the generation of more accurate and evidence-supported responses.
+At inference time, the system applies a safety-first decision layer, then performs graph-first retrieval for in-scope questions using condition lookup, reverse symptom lookup, comparison reasoning, and entity-centric relation exploration. Optional LLM synthesis is restricted to retrieved evidence. Responses include both citations and source chunks to support traceability and manual verification.
 
-While this work is still exploratory and does not yet define a novel contribution, it aims to evaluate the potential of graph-enhanced retrieval mechanisms in improving the safety and trustworthiness of LLM-based medical systems.
+The resulting framework provides an end-to-end, auditable workflow for grounded clinical QA and establishes a practical baseline for future quantitative evaluation and hybrid retrieval extensions.
 \end{abstract}
 
 \section{Introduction}
 
-The rapid advancement of Large Language Models (LLMs) has significantly impacted various domains, including healthcare, where they are increasingly used for medical question answering and literature summarization. Despite their strong linguistic capabilities, LLMs suffer from a well-known limitation: hallucination, where the model generates plausible but factually incorrect or unsupported information.
+Recent LLM systems can generate fluent medical answers, but fluency is not equivalent to correctness. In healthcare settings, unsupported statements can mislead users about symptoms, treatments, urgency, and risk, especially when users treat conversational responses as practical guidance. This makes factual grounding and safety behavior first-class system requirements.
 
-This issue is particularly critical in the medical domain. Many users rely on LLMs to obtain health-related information, sometimes avoiding professional medical consultation. In such cases, inaccurate or misleading responses can lead to serious consequences, including misinterpretation of symptoms or neglect of potentially severe conditions.
+Retrieval-Augmented Generation (RAG) addresses part of this challenge by conditioning generation on external evidence. However, in clinical domains, many questions are relational rather than purely semantic: users ask about condition-symptom links, differential diagnosis, prevalence statements, treatment suitability, and safety signals. A graph representation is well suited to these relation-centric queries because it explicitly stores typed entities and typed edges.
 
-To address this challenge, Retrieval-Augmented Generation (RAG) has emerged as a promising approach. By grounding LLM responses in external knowledge sources, RAG systems aim to reduce hallucinations and improve factual consistency. However, traditional RAG methods based on vector similarity often fail to capture complex relationships between medical entities.
+This paper documents and evaluates an implemented Clinical GraphRAG system centered on mental health QA. The system is not a toy prototype: it includes reproducible data ingestion, checkpointed graph construction, schema-constrained extraction, graph cleaning and repair stages, safety gating, and a production API. The runtime path is graph-first and checkpoint-backed, with explicit citations and source chunks returned in each answer. 
 
-In this work, we explore a Graph-based RAG framework that incorporates structured relationships between medical concepts. By leveraging graph representations and optimized querying strategies, the proposed approach provides richer contextual information to the LLM, enabling more accurate and evidence-based responses.
+The practical goals of this work are:
+\begin{itemize}
+    \item reduce unsupported generations by constraining responses to retrieved graph evidence,
+    \item preserve provenance through chunk-level citations and metadata,
+    \item improve robustness with repair passes and regression testing,
+    \item enforce a safety short-circuit for crisis-like queries.
+\end{itemize}
 
-At this stage, the primary objective of this study is to evaluate the effectiveness of such an approach rather than to introduce a fully novel contribution. Future work will focus on refining the methodology and identifying unique contributions.
+This manuscript therefore focuses on an engineering-valid, auditable RAG pipeline and its observed system behavior, while keeping claims aligned with what is currently implemented.
 
 
 \section{Dataset Construction and Processing}
 
 \subsection{Data Sources}
 
-
-In this work, we focus on the mental health domain, prioritizing reliability and factual grounding. Rather than using pre-existing benchmarks, we construct a domain-specific corpus from authoritative medical sources, including:
+We focus on the mental health domain and construct a domain-specific corpus from authoritative public sources instead of relying only on generic QA benchmarks. The current source set includes:
 \begin{itemize}
-    \item Mental health brochures (e.g., WHO, NIMH)
-    \item Clinical reference material (e.g., DSM)
+    \item WHO and NIMH mental health pages and documents,
+    \item DSM-derived reference material after dedicated markdown filtering.
 \end{itemize}
+
+Source definitions are maintained in a registry and converted into a provenance manifest that records authority, condition tag, URL, parser mode, and output markdown path.
 
 \subsection{Data Extraction and Contextual Enrichment}
 
-Raw documents (often PDF) are parsed using LLM-powered tools (e.g., LlamaIndex) and converted to Markdown. Each document is segmented into logical sections and paragraphs using Markdown headers, not arbitrary token or character limits. For each chunk, an LLM is prompted to generate a precise context sentence (e.g., ``This text belongs to the Diagnosis sub-topic of Autism Spectrum Disorder.''). This context is prepended to the text, ensuring downstream models always retain source and topical identity.
+The ingestion layer uses format-specific extraction:
+\begin{itemize}
+    \item HTML sources are converted with \texttt{trafilatura},
+    \item PDF sources are converted with \texttt{pymupdf4llm}, with fallback behavior when layout mode fails.
+\end{itemize}
+
+After ingestion, markdown documents are parsed into nodes using structural headers (via Markdown parsing), not arbitrary fixed-length splitting. Each node keeps source metadata (authority, condition, source label, section/header path, and file path), enabling later citation and auditing.
+
+For contextual enrichment, an LLM generates a short context sentence per node (stored as \texttt{context\_tag} and prepended to node text). This enrichment stage is checkpointed and resumable, so interrupted runs can continue deterministically under compatible node hash, model, and prompt version.
 
 \textbf{Example data sample:}
 \begin{itemize}
-    \item \textbf{Context:} ``This text belongs to the Diagnosis sub-topic of Autism Spectrum Disorder.''
-    \item \textbf{Text:} ``Diagnosis in young children is often a two-stage process.''
+    \item \textbf{Context tag:} ``This passage focuses on diagnostic features and symptom structure for a mental health condition.''
+    \item \textbf{Text chunk:} an original section-paragraph segment with preserved source metadata.
 \end{itemize}
 
 \subsection{Preprocessing}
 
-The pipeline applies:
+Preprocessing is designed for quality control before graph extraction:
 \begin{itemize}
-    \item \textbf{Text cleaning:} Remove formatting artifacts, normalize whitespace, and correct line breaks.
-    \item \textbf{Chunking:} Split by Markdown structure (headers/paragraphs), preserving semantic units (typically 1--2 paragraphs).
-    \item \textbf{Contextual enrichment:} Use an LLM to generate and prepend a context sentence to each chunk.
-    \item \textbf{Entity and relation extraction:} LLM-based extraction of medical entities and their relationships from each enriched chunk.
+    \item \textbf{Document-level filtering:} DSM markdown is filtered to remove non-clinical administrative sections and low-value chunks.
+    \item \textbf{Node integrity checks:} fingerprinting and checkpoint validation to avoid stale cache reuse.
+    \item \textbf{Citation normalization:} standardized source labels and section-aware citation strings.
+    \item \textbf{Resumable enrichment:} context-tag generation with periodic checkpoint snapshots.
 \end{itemize}
 
-This approach preserves clinical semantics and enables accurate downstream graph construction.
+This pipeline preserves clinical context while improving downstream extraction consistency.
 
 \subsection{Knowledge Graph Construction}
 
-From the enriched data, a domain-specific Knowledge Graph (KG) is built. The process includes:
+From enriched nodes, a clinical knowledge graph is extracted and refined through multiple control layers:
 \begin{itemize}
-    \item \textbf{Entity canonicalization:} Normalize names (e.g., ``CBT'' $\rightarrow$ ``COGNITIVE BEHAVIORAL THERAPY''), resolve type conflicts, and filter out generic/garbage entities.
-    \item \textbf{Node types:} Disorders, Symptoms, Treatments, Medications, Demographics, Safety Resources.
-    \item \textbf{Relation types:} HAS\_SYMPTOM, TREATED\_BY, PRESCRIBES, SUITABLE\_FOR, CONTRAINDICATED\_FOR, URGENT\_ACTION.
-    \item \textbf{LLM-based extraction:} Entities and relations are extracted using a structured LLM prompt, with pronoun resolution and strict schema validation.
-    \item \textbf{Community detection:} Graph clustering (Leiden algorithm) is used to identify communities of related entities, which are then summarized by the LLM.
+    \item \textbf{Schema-constrained extraction:} the LLM outputs typed entities and typed relations under a fixed allowlist.
+    \item \textbf{Canonicalization and merge:} aliases and abbreviations are normalized (e.g., CBT $\rightarrow$ COGNITIVE BEHAVIORAL THERAPY), and equivalent entities are merged.
+    \item \textbf{Validation and cleaning:} invalid triplets, placeholder entities, low-signal entities, and inconsistent edges are removed.
+    \item \textbf{Repair stages:} targeted repair prompts and curated payload injection fill known factual gaps (e.g., prevalence and differential diagnosis coverage).
+    \item \textbf{Community construction:} Leiden clustering produces graph communities; summaries are generated by LLM when configured, otherwise by heuristic fallback.
 \end{itemize}
 
-All steps are automated and reproducible, with checkpoints for each major artifact (enriched nodes, entities, relations, summaries).
+The extracted graph stores both relational structure and provenance maps (chunk citations and chunk payload metadata), enabling traceable answer construction at runtime.
+
+All major artifacts are checkpointed (nodes, enriched nodes, graph state, communities, summaries), supporting reproducible rebuilds and resumable long runs.
 
 \section{Problem Formulation}
 
 \subsection{Task Definition}
 
-Let $q$ denote a user query related to mental health (e.g., symptoms, diagnosis, or treatment). The objective is to generate an answer $A$ that is accurate and strictly grounded in the constructed knowledge graph.
+Let $q$ denote a user query in the mental health domain, and let $h$ denote optional session history for follow-up context. The system must return a response that is both useful and auditable.
+
+We define the returned payload as:
+\begin{equation}
+R = \left(A, \mathcal{C}, \mathcal{S}, t, b\right)
+\end{equation}
+where $A$ is the answer text, $\mathcal{C}$ is the citation list, $\mathcal{S}$ is the set of supporting source chunks, $t$ is the query type, and $b$ is a safety/status block (e.g., crisis or out-of-scope flags).
 
 Formally:
 \begin{equation}
-A = f(q, \mathcal{G})
+A = f(q, h, \mathcal{G}, \Sigma)
 \end{equation}
-where $\mathcal{G}$ is the knowledge graph built from the enriched and extracted data.
+where $\mathcal{G}$ is the graph artifact store and $\Sigma$ is the set of community summaries.
+
+Before retrieval, a safety/domain classifier routes the request into one of three classes: crisis, out-of-scope, or in-scope.
 
 \subsection{Retrieval Mechanism}
 
-\textbf{Strict Graph-Only Retrieval:} Given a query $q$, the system retrieves relevant information exclusively from the knowledge graph. There is no direct text chunk retrieval or embedding-based search over raw text. Instead:
+\textbf{Graph-first retrieval in production:} In the current live API path, evidence is retrieved from the checkpointed graph state and its provenance maps. The router selects among relation-aware branches:
 \begin{itemize}
-    \item The query is mapped to relevant entities and subgraphs (paths, communities) using graph traversal and keyword/entity matching.
-    \item Community detection and LLM-based summarization provide high-level context blocks for RAG.
-    \item A hybrid query engine combines local (triplet-level) and global (community-level) graph retrieval, with LLM synthesis and explicit source citation.
+    \item \textbf{Forward lookup:} condition-centric relation expansion,
+    \item \textbf{Reverse symptom lookup:} symptom-to-condition ranking,
+    \item \textbf{Comparison lookup:} shared and diverging relations between conditions,
+    \item \textbf{Entity lookup:} incoming/outgoing relation view for non-condition entities,
+    \item \textbf{Global context:} optional community-summary matching.
 \end{itemize}
 
-Relevance is measured by graph-based scores (e.g., path length, node connectivity, keyword overlap in community summaries), not cosine similarity over text embeddings.
+The runtime can optionally synthesize a final answer with an LLM, but only after graph evidence is assembled. Vector retrieval and Neo4j querying exist in the repository for benchmarking and auxiliary workflows; they are not the primary live query backend in the current implementation.
 
 \subsection{Hallucination Reduction Objective}
 
-Hallucination is defined as any generated information not supported by the retrieved graph facts or summaries. The system enforces grounding by:
-\begin{itemize}
-    \item Requiring all facts in answers to be traceable to specific graph communities or triplets.
-    \item Rejecting or flagging answers when the graph does not contain sufficient information.
-    \item Providing explicit source attribution (e.g., ``According to Community 4...'').
-\end{itemize}
+We define hallucination as any answer claim not supported by retrieved graph facts, relation metadata, or attached source chunk evidence. Let $\mathcal{U}(A)$ be the set of atomic claims in answer $A$, and let $\mathcal{E}$ be the retrieved evidence set. A claim $u \in \mathcal{U}(A)$ is grounded if it is entailed by some $e \in \mathcal{E}$.
 
-The objective is to maximize answer accuracy while minimizing hallucination:
+The practical objective is:
 \begin{equation}
 \max \ \text{Accuracy}(A) \quad \text{and} \quad \min \ \mathcal{H}(A)
 \end{equation}
+with
+\begin{equation}
+\mathcal{H}(A) = 1 - \frac{|\mathcal{U}_{\text{grounded}}(A)|}{|\mathcal{U}(A)|}
+\end{equation}
 
-This ensures all generated responses are grounded in verified, structured medical knowledge.
+The implemented system reduces $\mathcal{H}(A)$ through:
+\begin{itemize}
+    \item schema-constrained extraction and strict triplet validation,
+    \item post-extraction cleaning and repair stages,
+    \item graph-first retrieval with explicit citation and source-chunk return,
+    \item fallback behavior when evidence is insufficient,
+    \item crisis short-circuit logic that prevents normal QA generation for high-risk inputs.
+\end{itemize}
+
+This formulation matches the current codebase objective: evidence-grounded, safety-aware clinical responses with transparent provenance.
 
 
 \end{document}
